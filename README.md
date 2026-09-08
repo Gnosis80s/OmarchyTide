@@ -12,6 +12,12 @@ alongside. Data comes from the Open Waters tide API
 (api.openwaters.io), which resolves the picked place to the nearest published
 tide reference station, and is cached per location so the panel works offline.
 
+## Preview
+
+The expanded panel on the bar (Whitley Bay, UK):
+
+![Omarchy Tide expanded panel](tide-panel.png)
+
 ## Install
 
 Requires an Omarchy system (Hyprland + the Omarchy shell).
