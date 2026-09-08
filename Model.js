@@ -1,11 +1,12 @@
-// Tide data helpers for the Whitley Bay plugin.
+// Tide data helpers for the Omarchy tide plugin.
 //
-// Data comes from the Open Waters tide API (openwaters.io/tides), which for
-// Whitley Bay resolves to the North Shields reference station — 4 km down the
-// coast, with published harmonic constituents, so its predictions hold for
-// the bay. Extremes give timed high/low events; the timeline gives a 10-minute
-// level series used for the tide curve. When the timeline is unavailable the
-// curve is approximated by sine interpolation between neighbouring extremes.
+// Data comes from the Open Waters tide API (openwaters.io/tides), keyed by the
+// latitude/longitude of the location the user picked in the search box. The
+// API resolves to the nearest reference station with published harmonic
+// constituents, so predictions hold for the chosen place. Extremes give timed
+// high/low events; the timeline gives a 10-minute level series used for the
+// tide curve. When the timeline is unavailable the curve is approximated by
+// sine interpolation between neighbouring extremes.
 
 function now() {
   return new Date()
@@ -266,6 +267,63 @@ function barLabel(extremes, ms, loaded) {
   return loaded ? "" : "…"
 }
 
+// Location state file: JSON { name, latitude, longitude }; tolerant of an
+// absent or corrupt file.
+function parseLocationFile(raw) {
+  try {
+    var data = JSON.parse(String(raw || ""))
+    var name = String(data.name || "").trim()
+    var lat = Number(data.latitude)
+    var lon = Number(data.longitude)
+    return {
+      name: name,
+      latitude: isNaN(lat) ? null : lat,
+      longitude: isNaN(lon) ? null : lon
+    }
+  } catch (e) {
+    return { name: "", latitude: null, longitude: null }
+  }
+}
+
+// Filesystem-safe slug for the per-location cache filenames.
+function locationSlug(name) {
+  var s = String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+  return s === "" ? "nolocation" : s
+}
+
+// Open-Meteo geocoding response → pickable rows for the search box.
+function parseGeocodingResults(raw) {
+  try {
+    var data = JSON.parse(String(raw || ""))
+    var results = data.results
+    if (!results || !results.length) return []
+    var out = []
+    for (var i = 0; i < results.length; i++) {
+      var r = results[i]
+      if (!r || !r.name || r.latitude === undefined || r.longitude === undefined) continue
+      var region = [r.admin1, r.country].filter(function(part) { return !!part }).join(", ")
+      out.push({
+        name: String(r.name),
+        description: region,
+        latitude: r.latitude,
+        longitude: r.longitude
+      })
+    }
+    return out
+  } catch (e) {
+    return []
+  }
+}
+
+// Commit from the search box: only a real geocoded pick is valid, since a
+// location without coordinates cannot be resolved to tides.
+function locationCommit(text, suggestions, selectedIndex) {
+  var choices = suggestions || []
+  if (!choices.length) return { name: "", latitude: null, longitude: null }
+  var index = Math.max(0, Math.min(parseInt(selectedIndex, 10) || 0, choices.length - 1))
+  return choices[index]
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     now: now,
@@ -289,6 +347,10 @@ if (typeof module !== "undefined") {
     heightText: heightText,
     arrow: arrow,
     tideState: tideState,
-    barLabel: barLabel
+    barLabel: barLabel,
+    parseLocationFile: parseLocationFile,
+    locationSlug: locationSlug,
+    parseGeocodingResults: parseGeocodingResults,
+    locationCommit: locationCommit
   }
 }

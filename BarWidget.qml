@@ -4,9 +4,9 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// Whitley Bay tide pill: a mini water gauge (level between LOW and HIGH of
-// the current half-cycle) next to the next high ("▲ 13:22") or low ("▼ 07:09"),
-// with a tide-curve popup owned by Panel.qml. Left click opens the panel,
+// Tide pill: a mini water gauge (level between LOW and HIGH of the current
+// half-cycle) next to the next high ("▲ 13:22") or low ("▼ 07:09"), with a
+// searchable tide-curve popup owned by Panel.qml. Left click opens the panel,
 // middle click refreshes, right click toggles nothing yet.
 BarWidget {
   id: root

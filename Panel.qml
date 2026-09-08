@@ -6,10 +6,11 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Whitley Bay tide popup: next high/low in a hero, a rolling 6 h back + 18 h
-// ahead tide wave with a NOW marker and a LOW→HIGH water gauge, plus the
-// upcoming events. Data is fetched from the Open Waters tide API (North
-// Shields reference station) and cached so the panel still works offline.
+// Tide popup: a live location search picks any coastal place, and that
+// place's high/low extremes drive a rolling 6 h back + 18 h ahead tide wave
+// with a NOW marker, a LOW→HIGH water gauge, and the upcoming events. Data is
+// fetched from the Open Waters tide API and cached per location so the panel
+// still works offline.
 Panel {
   id: root
   moduleName: "whitleybay.tide"
@@ -30,9 +31,32 @@ Panel {
   property var extremes: []
   property var timeline: []
   property bool dataLoaded: false
+  property bool dataFailed: false
   property real nowMs: 0
   property int extremesRetries: 0
   property int timelineRetries: 0
+
+  readonly property string settingsDir: Quickshell.env("HOME") + "/.local/state/omarchy/settings"
+
+  // ---- Selected location. Persisted to a state file; empty until the user
+  //      searches and picks a coastal place (coordinates are required — a name
+  //      alone cannot resolve to tides).
+  property var configuredLocationState: ({ name: "", latitude: null, longitude: null })
+  readonly property bool hasLocation: !!root.configuredLocationState && root.configuredLocationState.name !== ""
+  readonly property string displayLocationName: root.hasLocation ? String(root.configuredLocationState.name) : ""
+  property bool editingLocation: false
+  property var locationSuggestions: []
+  property int suggestionIndex: 0
+  property string geocodePendingQuery: ""
+  property string geocodeActiveQuery: ""
+
+  // Guards against refetching when the persisted file re-fed the same place.
+  property string appliedLocationKey: "\u0000"
+  // Sanitized location name keys the per-location disk caches.
+  property string cacheSlug: "nolocation"
+  readonly property string locationFilePath: root.settingsDir + "/whitleybay-tide-location.json"
+  readonly property string extremesCachePath: root.settingsDir + "/whitleybay-tide-" + root.cacheSlug + "-extremes.json"
+  readonly property string timelineCachePath: root.settingsDir + "/whitleybay-tide-" + root.cacheSlug + "-timeline.json"
 
   readonly property var nextEvent: Model.firstAfter(root.extremes, root.nowMs)
   readonly property var nextHighEvent: Model.firstHighAfter(root.extremes, root.nowMs)
@@ -43,8 +67,10 @@ Panel {
 
   readonly property int contentInset: Style.space(20)
 
-  // Consumed by BarWidget.qml for the pill.
+  // Consumed by BarWidget.qml for the pill. Stays visible before any location
+  // is picked so the panel stays reachable (opening it then starts the search).
   readonly property string label: (function() {
+    if (!root.hasLocation) return "TIDE"
     if (!root.dataLoaded) return "…"
     return Model.barLabel(root.extremes, root.nowMs, root.dataLoaded)
   })()
@@ -71,10 +97,42 @@ Panel {
     timelineCacheFile.reload()
   }
 
-  function refresh() {
+  function clearData() {
+    root.extremesRetries = 0
+    root.timelineRetries = 0
+    root.dataFailed = false
+    root.extremes = []
+    root.timeline = []
+    root.dataLoaded = false
     root.tick()
-    extremesProc.command = root.fetchCommand(root.extremesBaseUrl, root.settingsDir + "/whitleybay-tide-extremes.json", 24, 72)
-    timelineProc.command = root.fetchCommand(root.timelineBaseUrl, root.settingsDir + "/whitleybay-tide-timeline.json", 12, 36)
+  }
+
+  // Re-points the caches at the active location and — only when the location
+  // actually changed — refetches. The persisted file and the in-memory state
+  // can converge to an equal value, so cheap identical-key reloads are the
+  // norm and refetches the exception.
+  function applyLocation() {
+    var key = root.hasLocation
+      ? String(root.configuredLocationState.latitude) + "," + String(root.configuredLocationState.longitude)
+      : ""
+    root.cacheSlug = root.hasLocation ? Model.locationSlug(root.configuredLocationState.name) : "nolocation"
+
+    if (key === root.appliedLocationKey) {
+      root.loadCaches()
+      return
+    }
+    root.appliedLocationKey = key
+    root.clearData()
+    if (!root.hasLocation) return
+    root.loadCaches()
+    root.refresh()
+  }
+
+  function refresh() {
+    if (!root.hasLocation) return
+    root.tick()
+    extremesProc.command = root.fetchCommand(root.extremesBaseUrl, root.extremesCachePath, 24, 72)
+    timelineProc.command = root.fetchCommand(root.timelineBaseUrl, root.timelineCachePath, 12, 36)
     if (!extremesProc.running) extremesProc.running = true
     if (!timelineProc.running) timelineProc.running = true
   }
@@ -83,9 +141,11 @@ Panel {
     var parsed = Model.parseExtremes(raw)
     if (parsed.length === 0) {
       if (root.extremesRetries < 3) { root.extremesRetries++; extremesRetryTimer.restart() }
+      else if (root.hasLocation) root.dataFailed = true
       return
     }
     root.extremesRetries = 0
+    root.dataFailed = false
     root.extremes = parsed
     root.dataLoaded = true
     root.tick()
@@ -104,15 +164,21 @@ Panel {
   }
 
   function open() {
-    root.loadCaches()
-    root.refresh()
     root.controller.show()
     Qt.callLater(function() {
       if (root.opened) setCenterHoverRevealSuppressed(true)
     })
+    if (!root.hasLocation) {
+      // No place picked yet — put the search box in front.
+      Qt.callLater(root.startEditingLocation)
+      return
+    }
+    root.loadCaches()
+    root.refresh()
   }
 
   function close() {
+    if (root.editingLocation) root.cancelEditingLocation()
     setCenterHoverRevealSuppressed(false)
     root.controller.hide()
   }
@@ -133,6 +199,88 @@ Panel {
       root.bar.setCenterHoverRevealSuppressed(value)
     else if (root.bar && "centerHoverRevealSuppressed" in root.bar)
       root.bar.centerHoverRevealSuppressed = value
+  }
+
+  // ---- Location editing. One tap on the location row swaps it for a live
+  //      search field; picking a geocoded suggestion persists name +
+  //      coordinates and triggers the refetch for that place.
+  function startEditingLocation() {
+    root.editingLocation = true
+    root.locationSuggestions = []
+    root.suggestionIndex = 0
+    Qt.callLater(function() {
+      if (!locationField) return
+      locationField.text = root.hasLocation ? root.configuredLocationState.name : ""
+      locationField.selectAll()
+      locationField.forceActiveFocus()
+    })
+  }
+
+  function cancelEditingLocation() {
+    root.editingLocation = false
+    root.locationSuggestions = []
+    geocodeDebounce.stop()
+    Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
+  }
+
+  // Enter with a highlighted suggestion commits; typing with no matches just
+  // cancels back to the previous location rather than clearing it.
+  function commitLocation() {
+    var location = Model.locationCommit(locationField.text, root.locationSuggestions, root.suggestionIndex)
+    if (location.name === "") { root.cancelEditingLocation(); return }
+    root.forceLocation(location)
+  }
+
+  function pickSuggestion(suggestion) {
+    if (suggestion) root.forceLocation(suggestion)
+  }
+
+  function forceLocation(location) {
+    root.configuredLocationState = {
+      name: String(location.name || ""),
+      latitude: location.latitude === undefined || location.latitude === null ? null : Number(location.latitude),
+      longitude: location.longitude === undefined || location.longitude === null ? null : Number(location.longitude)
+    }
+    root.persistLocation()
+  }
+
+  function clearLocation() {
+    root.configuredLocationState = { name: "", latitude: null, longitude: null }
+    root.persistLocation()
+    root.cancelEditingLocation()
+  }
+
+  function persistLocation() {
+    locationSaveProc.command = ["bash", "-c",
+      "mkdir -p \"$0\" && printf '%s' \"$1\" > \"$2\"",
+      root.settingsDir,
+      JSON.stringify(root.configuredLocationState),
+      root.locationFilePath]
+    locationSaveProc.running = true
+  }
+
+  // Debounced lookups. One curl at a time; if the query moved on while a
+  // fetch was in flight, the latest query runs right after.
+  function requestGeocode() {
+    var query = locationField.text.trim()
+    if (query.length < 2) { root.locationSuggestions = []; return }
+    root.geocodePendingQuery = query
+    if (!geocodeProc.running) root.startGeocode()
+  }
+
+  function startGeocode() {
+    root.geocodeActiveQuery = root.geocodePendingQuery
+    geocodeProc.command = ["curl", "-fsS", "--max-time", "5",
+      "https://geocoding-api.open-meteo.com/v1/search?name=" + encodeURIComponent(root.geocodePendingQuery) + "&count=5&language=en&format=json"]
+    geocodeProc.running = true
+  }
+
+  onConfiguredLocationChanged: {
+    root.editingLocation = false
+    root.locationSuggestions = []
+    geocodeDebounce.stop()
+    Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
+    root.applyLocation()
   }
 
   onNowMsChanged: root.recomputeCurve()
@@ -157,12 +305,11 @@ Panel {
   }
 
   // ---- Cached copies survive the network being gone; reloaded on open and
-  //      refreshed by every successful fetch.
-  readonly property string settingsDir: Quickshell.env("HOME") + "/.local/state/omarchy/settings"
+  //      refreshed by every successful fetch. Keyed per location (cacheSlug).
 
   FileView {
     id: extremesCacheFile
-    path: root.settingsDir + "/whitleybay-tide-extremes.json"
+    path: root.extremesCachePath
     watchChanges: false
     printErrors: false
     onLoaded: {
@@ -173,7 +320,7 @@ Panel {
 
   FileView {
     id: timelineCacheFile
-    path: root.settingsDir + "/whitleybay-tide-timeline.json"
+    path: root.timelineCachePath
     watchChanges: false
     printErrors: false
     onLoaded: {
@@ -187,8 +334,15 @@ Panel {
   //      leaves the previous cache untouched. The start/end window is computed
   //      in bash (GNU date) on every fetch so it always spans the past (for the
   //      wave's back-half and the previous extreme) and plenty of future events.
-  readonly property string extremesBaseUrl: "https://api.openwaters.io/tides/extremes?latitude=55.0456&longitude=-1.4443&units=meters"
-  readonly property string timelineBaseUrl: "https://api.openwaters.io/tides/timeline?latitude=55.0456&longitude=-1.4443"
+  readonly property string extremesBaseUrl: root.hasLocation
+    ? "https://api.openwaters.io/tides/extremes?latitude=" + encodeURIComponent(String(root.configuredLocationState.latitude))
+      + "&longitude=" + encodeURIComponent(String(root.configuredLocationState.longitude))
+      + "&units=meters"
+    : ""
+  readonly property string timelineBaseUrl: root.hasLocation
+    ? "https://api.openwaters.io/tides/timeline?latitude=" + encodeURIComponent(String(root.configuredLocationState.latitude))
+      + "&longitude=" + encodeURIComponent(String(root.configuredLocationState.longitude))
+    : ""
 
   function fetchCommand(urlBase, cachePath, backHours, aheadHours) {
     return ["bash", "-c",
@@ -213,7 +367,8 @@ Panel {
     id: extremesRetryTimer
     interval: 3000
     onTriggered: {
-      extremesProc.command = root.fetchCommand(root.extremesBaseUrl, root.settingsDir + "/whitleybay-tide-extremes.json", 24, 72)
+      if (!root.hasLocation) return
+      extremesProc.command = root.fetchCommand(root.extremesBaseUrl, root.extremesCachePath, 24, 72)
       if (!extremesProc.running) extremesProc.running = true
     }
   }
@@ -230,18 +385,63 @@ Panel {
     id: timelineRetryTimer
     interval: 4000
     onTriggered: {
-      timelineProc.command = root.fetchCommand(root.timelineBaseUrl, root.settingsDir + "/whitleybay-tide-timeline.json", 12, 36)
+      if (!root.hasLocation) return
+      timelineProc.command = root.fetchCommand(root.timelineBaseUrl, root.timelineCachePath, 12, 36)
       if (!timelineProc.running) timelineProc.running = true
     }
   }
 
+  // ---- Persisted location. watchChanges keeps the shell and any external
+  //      editor (or another plugin instance) in sync.
+  property FileView locationFile: FileView {
+    path: root.locationFilePath
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.configuredLocationState = Model.parseLocationFile(text())
+    onLoadFailed: root.configuredLocationState = Model.parseLocationFile("")
+  }
+
+  // The first read can race plugin load (observed in the weather panel); one
+  // delayed reload self-corrects.
+  Timer {
+    interval: 1500
+    running: true
+    onTriggered: locationFile.reload()
+  }
+
+  Process {
+    id: locationSaveProc
+    onExited: function(exitCode) {
+      if (exitCode === 0) locationFile.reload()
+    }
+  }
+
+  // ---- Live location lookup (open-meteo geocoding) with a short debounce.
+  Process {
+    id: geocodeProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.locationSuggestions = root.editingLocation ? Model.parseGeocodingResults(text) : []
+        root.suggestionIndex = 0
+        if (root.geocodePendingQuery !== root.geocodeActiveQuery) Qt.callLater(root.startGeocode)
+      }
+    }
+  }
+
+  Timer {
+    id: geocodeDebounce
+    interval: 300
+    onTriggered: root.requestGeocode()
+  }
+
   Component.onCompleted: {
-    extremesProc.command = root.fetchCommand(root.extremesBaseUrl, root.settingsDir + "/whitleybay-tide-extremes.json", 24, 72)
-    timelineProc.command = root.fetchCommand(root.timelineBaseUrl, root.settingsDir + "/whitleybay-tide-timeline.json", 12, 36)
-    root.loadCaches()
-    root.refresh()
     root.tick()
     root.recomputeCurve()
+    root.loadCaches()
+    locationFile.reload()
+    Qt.callLater(root.applyLocation)
   }
 
   KeyboardPanel {
@@ -290,7 +490,9 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 anchors.verticalCenter: parent.verticalCenter
-                text: "WHITLEY BAY"
+                text: root.displayLocationName === ""
+                  ? "TIDE TIMES"
+                  : root.displayLocationName.toUpperCase()
                 color: root.contentForeground
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.caption
@@ -301,7 +503,9 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 anchors.verticalCenter: parent.verticalCenter
-                text: "NORTH SEA · ST MARY'S"
+                text: root.displayLocationName === ""
+                  ? "SEARCH A COASTAL LOCATION"
+                  : "OPEN WATERS"
                 color: Qt.darker(root.contentForeground, 1.7)
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.caption
@@ -324,93 +528,181 @@ Panel {
             }
           }
 
-          // ---- Hero: next event on the left, current level on the right.
+          // ---- Location: the current place, or the live search box that replaces
+          //      it. The hero's big next-event time is gone — the pill, wave,
+          //      gauge and COMING UP list carry that now.
           Item {
+            id: locationRoot
             width: parent.width
-            height: Math.max(heroLeft.implicitHeight, heroRight.implicitHeight)
+            height: root.editingLocation ? locationEditor.implicitHeight : locationBar.implicitHeight
 
             Row {
-              id: heroLeft
+              id: locationBar
+              visible: !root.editingLocation
               anchors.left: parent.left
               anchors.leftMargin: root.contentInset
               anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(14)
+              spacing: Style.space(10)
 
               Text {
-                id: heroArrow
                 textFormat: Text.PlainText
                 anchors.verticalCenter: parent.verticalCenter
-                anchors.verticalCenterOffset: 2
-                text: root.nextEvent ? Model.arrow(root.nextEvent) : "—"
+                text: ""
                 color: Color.accent
                 font.family: root.contentFontFamily
-                font.pixelSize: 40
+                font.pixelSize: Style.font.title
+                font.bold: true
               }
 
               Column {
-                anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(1)
 
                 Text {
                   textFormat: Text.PlainText
-                  text: root.nextEvent ? Model.formatTime(root.nextEvent.ms) : (root.dataLoaded ? "—" : "…")
+                  text: root.displayLocationName === ""
+                    ? "SEARCH FOR A LOCATION"
+                    : root.displayLocationName.toUpperCase()
                   color: root.contentForeground
                   font.family: root.contentFontFamily
-                  font.pixelSize: 46
+                  font.pixelSize: Style.font.heading
                   font.bold: true
+                  font.letterSpacing: 0.8
                 }
 
                 Text {
                   textFormat: Text.PlainText
-                  text: root.nextEvent
-                    ? (root.nextEvent.high ? "HIGH " : "LOW ") + Model.heightText(root.nextEvent.level)
-                    : ""
-                  color: Qt.darker(root.contentForeground, 1.45)
+                  text: root.displayLocationName === ""
+                    ? "Tap to find a coastal place for its tide times"
+                    : "TAP TO CHANGE LOCATION"
+                  color: Qt.darker(root.contentForeground, 1.7)
                   font.family: root.contentFontFamily
-                  font.pixelSize: Style.font.bodySmall
-                  font.letterSpacing: 1.2
+                  font.pixelSize: Style.font.caption
+                  font.letterSpacing: 1.1
                 }
               }
             }
 
             Column {
-              id: heroRight
+              id: locationEditor
+              visible: root.editingLocation
+              anchors.left: parent.left
+              anchors.leftMargin: root.contentInset
               anchors.right: parent.right
               anchors.rightMargin: root.contentInset
               anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(2)
+              spacing: Style.space(6)
 
-              Text {
-                textFormat: Text.PlainText
-                anchors.right: parent.right
-                text: "NOW"
-                color: Qt.darker(root.contentForeground, 1.7)
+              TextField {
+                id: locationField
+                width: parent.width
+                placeholderText: "Search for a location…"
+                foreground: root.contentForeground
+                accent: Color.accent
                 font.family: root.contentFontFamily
-                font.pixelSize: Style.font.caption
-                font.letterSpacing: 1.4
-                font.bold: true
+
+                onTextChanged: if (root.editingLocation) geocodeDebounce.restart()
+
+                Keys.onPressed: function(event) {
+                  if (event.key === Qt.Key_Escape) {
+                    root.cancelEditingLocation(); event.accepted = true
+                  } else if (event.key === Qt.Key_Down) {
+                    if (root.suggestionIndex < root.locationSuggestions.length - 1) root.suggestionIndex++
+                    event.accepted = true
+                  } else if (event.key === Qt.Key_Up) {
+                    if (root.suggestionIndex > 0) root.suggestionIndex--
+                    event.accepted = true
+                  } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                    root.commitLocation(); event.accepted = true
+                  }
+                }
+              }
+
+              Column {
+                width: parent.width
+                spacing: 0
+                visible: root.locationSuggestions.length > 0
+
+                Repeater {
+                  model: root.locationSuggestions
+
+                  Rectangle {
+                    required property var modelData
+                    required property int index
+                    width: parent.width
+                    height: suggestionRow.implicitHeight + Style.space(10)
+                    radius: Style.cornerRadius
+                    color: index === root.suggestionIndex
+                      ? Style.hoverFillFor(root.contentForeground, Color.accent)
+                      : "transparent"
+
+                    Row {
+                      id: suggestionRow
+                      anchors.left: parent.left
+                      anchors.leftMargin: Style.space(10)
+                      anchors.verticalCenter: parent.verticalCenter
+                      spacing: Style.space(8)
+
+                      Text {
+                        textFormat: Text.PlainText
+                        text: modelData.name
+                        color: index === root.suggestionIndex
+                          ? Style.hoverStateColor(root.contentForeground, Color.accent)
+                          : root.contentForeground
+                        font.family: root.contentFontFamily
+                        font.pixelSize: Style.font.body
+                      }
+
+                      Text {
+                        textFormat: Text.PlainText
+                        visible: text !== ""
+                        text: modelData.description
+                        color: Qt.darker(root.contentForeground, 1.5)
+                        font.family: root.contentFontFamily
+                        font.pixelSize: Style.font.bodySmall
+                        anchors.verticalCenter: parent.verticalCenter
+                      }
+                    }
+
+                    MouseArea {
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onPositionChanged: root.suggestionIndex = index
+                      onClicked: root.pickSuggestion(modelData)
+                    }
+                  }
+                }
               }
 
               Text {
-                textFormat: Text.PlainText
-                anchors.right: parent.right
-                text: root.tideNow ? Model.heightText(root.tideNow.level) : "—"
-                color: root.contentForeground
+                visible: locationField.text.trim().length >= 2 && root.locationSuggestions.length === 0
+                text: "No coastal matches — try another place."
+                color: Qt.darker(root.contentForeground, 1.6)
                 font.family: root.contentFontFamily
-                font.pixelSize: Style.font.heading
-                font.bold: true
-              }
-
-              Text {
-                textFormat: Text.PlainText
-                anchors.right: parent.right
-                text: root.stateText ? root.stateText.toLowerCase() : ""
-                color: Color.accent
-                font.family: root.contentFontFamily
-                font.pixelSize: Style.font.caption
-                font.letterSpacing: 1
+                font.pixelSize: Style.font.bodySmall
+                font.italic: true
               }
             }
+
+            MouseArea {
+              anchors.fill: parent
+              visible: !root.editingLocation
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.startEditingLocation()
+            }
+          }
+
+          // ---- Shown briefly when a picked place has no tide data.
+          Text {
+            visible: root.hasLocation && !root.dataLoaded && root.dataFailed
+            width: parent.width - root.contentInset * 2
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: "No tide data for this location — try a nearby coastline."
+            color: Qt.darker(root.contentForeground, 1.6)
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.bodySmall
+            font.italic: true
           }
 
           // ---- Tide phase: a rolling wave chart with a clear NOW marker,
@@ -418,6 +710,7 @@ Panel {
           Column {
             width: parent.width
             spacing: Style.space(8)
+            visible: root.hasLocation
 
             Item {
               width: parent.width
@@ -846,6 +1139,7 @@ Panel {
           Column {
             width: parent.width
             spacing: Style.space(2)
+            visible: root.hasLocation
 
             Text {
               textFormat: Text.PlainText
@@ -938,7 +1232,9 @@ Panel {
 
               Text {
                 textFormat: Text.PlainText
-                text: "NORTH SHIELDS GAUGE"
+                text: root.displayLocationName === ""
+                  ? "TIDE DATA"
+                  : root.displayLocationName.toUpperCase()
                 color: Qt.darker(root.contentForeground, 1.9)
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.caption

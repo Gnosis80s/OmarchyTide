@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "id": "whitleybay.tide",
-  "name": "Whitley Bay Tide",
-  "version": "1.0.0",
-  "author": "Whitley Bay",
-  "description": "High and low tides for Whitley Bay with a minimal tide curve",
+  "name": "Tides",
+  "version": "1.1.0",
+  "author": "Gnosis80s",
+  "description": "High and low tides for any coastal location, picked via a live location search",
   "kinds": [
     "bar-widget"
   ],
@@ -12,8 +12,8 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "Whitley Bay Tide",
-    "description": "Tide pill with a tide-curve popup",
+    "displayName": "Tides",
+    "description": "Tide pill with a searchable tide-curve popup",
     "category": "Info",
     "allowMultiple": false
   }
