@@ -119,31 +119,6 @@ Panel {
     var dark = Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.14)
     var k = Math.max(0, Math.min(1, info.illumination))
     var term = Math.abs(2 * k - 1) * r
-    var litRight = info.waxing
-
-    // Semi-circle limb and elliptical terminator for each side. Canvas angles
-    // grow toward +y (down), so "right" bulges through 0° and "left" through
-    // 180°.
-    function sidePaths(right) {
-      return {
-        limbArc: right
-          ? [Math.PI / 2, -Math.PI / 2, true]
-          : [Math.PI / 2, -Math.PI / 2, false],
-        termEllipse: right
-          ? [-Math.PI / 2, Math.PI / 2, false]
-          : [-Math.PI / 2, Math.PI / 2, true]
-      }
-    }
-
-    function tracePath(p) {
-      ctx.moveTo(0, r)
-      ctx.arc(0, 0, r, p.limbArc[0], p.limbArc[1], p.limbArc[2])
-      ctx.ellipse(0, 0, term, r, 0, p.termEllipse[0], p.termEllipse[1], p.termEllipse[2])
-      ctx.closePath()
-    }
-
-    var litSide = sidePaths(litRight)
-    var shadeSide = sidePaths(!litRight)
 
     // Full disc first — lit when more than half lit, dark otherwise…
     ctx.beginPath()
@@ -151,20 +126,29 @@ Panel {
     ctx.fillStyle = (2 * k - 1) >= 0 ? lit : dark
     ctx.fill()
 
-    if (2 * k - 1 >= 0) {
-      // …then drop the thin shade in the anti-sun side (waning sliver / stubs
-      // past full), which vanishes at full moon.
-      ctx.beginPath()
-      tracePath(shadeSide)
-      ctx.fillStyle = dark
-      ctx.fill()
-    } else {
-      // or lay the lit lens toward the sun, growing from a hair at new moon.
-      ctx.beginPath()
-      tracePath(litSide)
-      ctx.fillStyle = lit
-      ctx.fill()
+    // …then the lens between the limb and the elliptical terminator, built
+    // from sampled points (Canvas ellipse() draws a disconnected blob, so it's
+    // not used here). The overlay hugs the lit side on crescents and the
+    // dark side past half, growing to nothing at new/full moon.
+    var litRight = info.waxing
+    var shade = (2 * k - 1) >= 0
+    var side = litRight ? 1 : -1
+    var overlay = shade ? -side : side
+    var n = 48
+
+    ctx.beginPath()
+    ctx.moveTo(0, r)
+    for (var i = 1; i <= n; i++) {
+      var a = Math.PI / 2 + i / n * Math.PI * (overlay > 0 ? -1 : 1)
+      ctx.lineTo(r * Math.cos(a), r * Math.sin(a))
     }
+    for (var j = 0; j <= n; j++) {
+      var b = -Math.PI / 2 + j / n * Math.PI * (overlay > 0 ? 1 : -1)
+      ctx.lineTo(term * Math.cos(b), r * Math.sin(b))
+    }
+    ctx.closePath()
+    ctx.fillStyle = shade ? dark : lit
+    ctx.fill()
 
     ctx.restore()
   }
