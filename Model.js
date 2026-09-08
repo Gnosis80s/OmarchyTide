@@ -264,13 +264,6 @@ function _vec3(ra, dec) {
 }
 
 function _dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] }
-function _cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]] }
-function _sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]] }
-function _scale(s, a) { return [s * a[0], s * a[1], s * a[2]] }
-function _norm(a) {
-  var l = Math.sqrt(_dot(a, a))
-  return l < 1e-9 ? null : [a[0] / l, a[1] / l, a[2] / l]
-}
 
 function _eclToEqu(lamDeg, betDeg, epsDeg) {
   var l = _rad(lamDeg), b = _rad(betDeg), e = _rad(epsDeg)
@@ -354,18 +347,12 @@ function _moonEquatorial(T) {
   return _eclToEqu(lam, bet, _obliq(T))
 }
 
-// Lunar phase plus the way the moon appears in the sky from a location.
-//
-// The phase itself is global, but the tilt of the bright limb (how the
-// crescent leans) depends on where you stand: it is the position angle of the
-// bright limb's midpoint relative to the local vertical (parallactic-angle
-// corrected). With no observer coordinates the tilt is 0 — the moon as seen
-// edge-on from a north-polar viewpoint. Positive tilt leans the lit side to
-// the right/east as seen from the surface.
-function moonInfo(ms, observerLatitude, observerLongitude) {
+// Lunar phase. The phase itself is global, so no observer coordinates are
+// needed. Returns the synodic-month age in days, the illuminated fraction,
+// the eight-bin phase name, and which side of the disc is lit (waxing leans
+// right, waning left — the classic flat phase graphic).
+function moonInfo(ms) {
   var i = typeof ms === "number" ? ms : (new Date()).getTime()
-  var jd = i / 86400000 + 2440587.5
-  var T = (jd - 2451545.0) / 36525.0
 
   var synodic = 29.530588853 * 24 * 3600 * 1000
   var newMoonEpoch = Date.UTC(2000, 0, 6, 18, 14, 0)
@@ -381,6 +368,8 @@ function moonInfo(ms, observerLatitude, observerLongitude) {
   else if (age < 0.78) phase = "Last quarter"
   else phase = "Waning crescent"
 
+  var jd = i / 86400000 + 2440587.5
+  var T = (jd - 2451545.0) / 36525.0
   var sun = _sunEquatorial(T)
   var moon = _moonEquatorial(T)
   var S = _vec3(sun.ra, sun.dec)
@@ -391,36 +380,11 @@ function moonInfo(ms, observerLatitude, observerLongitude) {
   var waxing = _wrap360(_deg(moon.ra) - _deg(sun.ra)) < 180
   var illumination = Math.max(0, Math.min(1, (1 - cosE) / 2))
 
-  // Bright-limb tilt from the local vertical, via position angle of the sun's
-  // tangent direction minus the parallactic angle to the zenith.
-  var tilt = 0
-  if (typeof observerLatitude === "number" && !isNaN(observerLatitude)) {
-    var lat = _rad(observerLatitude)
-    var lon = _rad(typeof observerLongitude === "number" && !isNaN(observerLongitude) ? observerLongitude : 0)
-    var gst = _wrap360(280.46061837 + 360.98564736629 * (jd - 2451545.0) + 0.000387933 * T * T - T * T * T / 38710000)
-    var lst = _rad(gst) + lon
-    var Z = [Math.cos(lat) * Math.cos(lst), Math.cos(lat) * Math.sin(lst), Math.sin(lat)]
-    var N = [0, 0, 1]
-
-    var east = _norm(_cross(N, M))
-    var north = _norm(_sub(N, _scale(_dot(N, M), M)))
-    var bright = _norm(_sub(S, _scale(cosE, M)))
-    var zenith = _norm(_sub(Z, _scale(_dot(Z, M), M)))
-    if (east && north && bright && zenith) {
-      var chi = Math.atan2(_dot(bright, east), _dot(bright, north))
-      var eta = Math.atan2(_dot(zenith, east), _dot(zenith, north))
-      tilt = chi - eta
-    }
-  }
-
   return {
-    age: age,
     ageDays: age * 29.530588853,
     illumination: illumination,
     phase: phase,
-    waxing: waxing,
-    tiltDeg: _deg(tilt),
-    tiltRad: tilt
+    waxing: waxing
   }
 }
 

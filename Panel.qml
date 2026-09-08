@@ -76,13 +76,7 @@ Panel {
   })()
 
   readonly property string stateText: Model.tideState(root.nextEvent)
-  // Lunar phase is global, but the way the moon leans in the sky depends on
-  // the observer's whereabouts — the tilt lands at the location's latitude,
-  // and stays flat until one is picked.
-  readonly property var moon: Model.moonInfo(
-    root.nowMs,
-    root.hasLocation ? Number(root.configuredLocationState.latitude) : undefined,
-    root.hasLocation ? Number(root.configuredLocationState.longitude) : undefined)
+  readonly property var moon: Model.moonInfo(root.nowMs)
   readonly property string moonPhase: root.moon ? root.moon.phase.toUpperCase() : ""
   readonly property string moonSubline: (function() {
     if (!root.moon) return ""
@@ -99,11 +93,9 @@ Panel {
     root.recomputeCurve()
   }
 
-  // Paints the moon's visible disc as seen now from the picked location: the
-  // lit shape (crescent lens or disc-minus-shade) is drawn flat with the lit
-  // side on the sunward tack, then whole canvas is rotated by the bright-limb
-  // tilt so it matches the sky's lean — including the "crescent on its back"
-  // near the horizon.
+  // Paints the moon's visible disc: the lit shape (crescent lens or
+  // disc-minus-shade) with the lit side on the sunward tack. A straight phase
+  // graphic — waxing leans right, waning left, no sky tilt.
   function paintMoon(ctx) {
     if (!ctx) return
     var cw = moonCanvas.width, ch = moonCanvas.height
@@ -122,7 +114,6 @@ Panel {
 
     ctx.save()
     ctx.translate(cx, cy)
-    ctx.rotate(info.tiltRad)
 
     var lit = Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.92)
     var dark = Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.14)

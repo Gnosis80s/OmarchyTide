@@ -6,9 +6,9 @@ Adds a tide pill to the bar showing the next high/low (▲/▼) with a tide-curv
 popup: a live location search picks any coastal place, and its high/low
 extremes drive a rolling 6 h back / 18 h ahead wave, a LOW→HIGH water gauge,
 and the upcoming events. The header replaces the removed location line with a
-drawn lunar disc showing the moon in its current visible form — lit shape plus
-the bright-limb lean as seen from the picked location — with the phase, % lit
-and age alongside. Data comes from the Open Waters tide API
+simple drawn lunar disc — the current phase with the lit side facing the sun,
+waxing to the right, waning to the left — plus the phase, % lit and age
+alongside. Data comes from the Open Waters tide API
 (api.openwaters.io), which resolves the picked place to the nearest published
 tide reference station, and is cached per location so the panel works offline.
 
