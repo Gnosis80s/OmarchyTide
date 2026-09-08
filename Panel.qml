@@ -76,10 +76,17 @@ Panel {
   })()
 
   readonly property string stateText: Model.tideState(root.nextEvent)
-  // Lunar phase is global, so it shows even before any location is picked.
-  readonly property string moonLabel: (function() {
-    var m = Model.moonInfo(root.nowMs)
-    return m.phase.toUpperCase() + " · " + Math.round(m.illumination * 100) + "% LIT"
+  // Lunar phase is global, but the way the moon leans in the sky depends on
+  // the observer's whereabouts — the tilt lands at the location's latitude,
+  // and stays flat until one is picked.
+  readonly property var moon: Model.moonInfo(
+    root.nowMs,
+    root.hasLocation ? Number(root.configuredLocationState.latitude) : undefined,
+    root.hasLocation ? Number(root.configuredLocationState.longitude) : undefined)
+  readonly property string moonPhase: root.moon ? root.moon.phase.toUpperCase() : ""
+  readonly property string moonSubline: (function() {
+    if (!root.moon) return ""
+    return Math.round(root.moon.illumination * 100) + "% LIT · AGE " + root.moon.ageDays.toFixed(1) + " DAYS"
   })()
   readonly property color contentForeground: bar ? bar.foreground : Color.foreground
   readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
@@ -90,6 +97,85 @@ Panel {
   function tick() {
     root.nowMs = (new Date()).getTime()
     root.recomputeCurve()
+  }
+
+  // Paints the moon's visible disc as seen now from the picked location: the
+  // lit shape (crescent lens or disc-minus-shade) is drawn flat with the lit
+  // side on the sunward tack, then whole canvas is rotated by the bright-limb
+  // tilt so it matches the sky's lean — including the "crescent on its back"
+  // near the horizon.
+  function paintMoon(ctx) {
+    if (!ctx) return
+    var cw = moonCanvas.width, ch = moonCanvas.height
+    var r = Math.min(cw, ch) / 2 - Style.spaceReal(2)
+    var cx = cw / 2, cy = ch / 2
+    ctx.clearRect(0, 0, cw, ch)
+
+    var info = root.moon
+    if (!info) return
+
+    ctx.beginPath()
+    ctx.arc(cx, cy, r, 0, 2 * Math.PI, false)
+    ctx.lineWidth = 1
+    ctx.strokeStyle = Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.28)
+    ctx.stroke()
+
+    ctx.save()
+    ctx.translate(cx, cy)
+    ctx.rotate(info.tiltRad)
+
+    var lit = Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.92)
+    var dark = Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.14)
+    var k = Math.max(0, Math.min(1, info.illumination))
+    var term = Math.abs(2 * k - 1) * r
+    var litRight = info.waxing
+
+    // Semi-circle limb and elliptical terminator for each side. Canvas angles
+    // grow toward +y (down), so "right" bulges through 0° and "left" through
+    // 180°.
+    function sidePaths(right) {
+      return {
+        limbArc: right
+          ? [Math.PI / 2, -Math.PI / 2, true]
+          : [Math.PI / 2, -Math.PI / 2, false],
+        termEllipse: right
+          ? [-Math.PI / 2, Math.PI / 2, false]
+          : [-Math.PI / 2, Math.PI / 2, true]
+      }
+    }
+
+    function tracePath(p) {
+      ctx.moveTo(0, r)
+      ctx.arc(0, 0, r, p.limbArc[0], p.limbArc[1], p.limbArc[2])
+      ctx.ellipse(0, 0, term, r, 0, p.termEllipse[0], p.termEllipse[1], p.termEllipse[2])
+      ctx.closePath()
+    }
+
+    var litSide = sidePaths(litRight)
+    var shadeSide = sidePaths(!litRight)
+
+    // Full disc first — lit when more than half lit, dark otherwise…
+    ctx.beginPath()
+    ctx.arc(0, 0, r, 0, 2 * Math.PI, false)
+    ctx.fillStyle = (2 * k - 1) >= 0 ? lit : dark
+    ctx.fill()
+
+    if (2 * k - 1 >= 0) {
+      // …then drop the thin shade in the anti-sun side (waning sliver / stubs
+      // past full), which vanishes at full moon.
+      ctx.beginPath()
+      tracePath(shadeSide)
+      ctx.fillStyle = dark
+      ctx.fill()
+    } else {
+      // or lay the lit lens toward the sun, growing from a hair at new moon.
+      ctx.beginPath()
+      tracePath(litSide)
+      ctx.fillStyle = lit
+      ctx.fill()
+    }
+
+    ctx.restore()
   }
 
   function recomputeCurve() {
@@ -286,9 +372,13 @@ Panel {
     geocodeDebounce.stop()
     Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
     root.applyLocation()
+    Qt.callLater(function() { if (moonCanvas) moonCanvas.requestPaint() })
   }
 
-  onNowMsChanged: root.recomputeCurve()
+  onNowMsChanged: {
+    root.recomputeCurve()
+    if (moonCanvas) moonCanvas.requestPaint()
+  }
   onExtremesChanged: root.recomputeCurve()
   onTimelineChanged: root.recomputeCurve()
 
@@ -483,38 +573,46 @@ Panel {
           // ---- Head
           Item {
             width: parent.width
-            height: Math.max(headLeft.implicitHeight, headRight.implicitHeight)
+            height: Math.max(lunarBlock.implicitHeight, headRight.implicitHeight)
 
             Row {
-              id: headLeft
+              id: lunarBlock
               anchors.left: parent.left
               anchors.leftMargin: root.contentInset
               anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(12)
+              spacing: Style.space(16)
 
-              Text {
-                textFormat: Text.PlainText
-                anchors.verticalCenter: parent.verticalCenter
-                text: root.displayLocationName === ""
-                  ? "TIDE TIMES"
-                  : root.displayLocationName.toUpperCase()
-                color: root.contentForeground
-                font.family: root.contentFontFamily
-                font.pixelSize: Style.font.caption
-                font.letterSpacing: 1.6
-                font.bold: true
+              Canvas {
+                id: moonCanvas
+                width: Style.space(76)
+                height: width
+                onPaint: root.paintMoon(getContext("2d"))
+                Component.onCompleted: requestPaint()
               }
 
-              Text {
-                textFormat: Text.PlainText
+              Column {
                 anchors.verticalCenter: parent.verticalCenter
-                text: root.displayLocationName === ""
-                  ? "SEARCH A COASTAL LOCATION"
-                  : "OPEN WATERS"
-                color: Qt.darker(root.contentForeground, 1.7)
-                font.family: root.contentFontFamily
-                font.pixelSize: Style.font.caption
-                font.letterSpacing: 1.1
+                spacing: Style.space(3)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: root.moonPhase
+                  color: root.contentForeground
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                  font.letterSpacing: 1.6
+                  font.bold: true
+                }
+
+                Text {
+                  textFormat: Text.PlainText
+                  width: Style.space(300)
+                  text: root.moonSubline
+                  color: Qt.darker(root.contentForeground, 1.6)
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                  font.letterSpacing: 1
+                }
               }
             }
 
@@ -534,16 +632,6 @@ Panel {
                 font.pixelSize: Style.font.caption
                 font.letterSpacing: 1.4
                 font.bold: true
-              }
-
-              Text {
-                textFormat: Text.PlainText
-                anchors.right: parent.right
-                text: root.moonLabel
-                color: Qt.darker(root.contentForeground, 1.6)
-                font.family: root.contentFontFamily
-                font.pixelSize: Style.font.caption
-                font.letterSpacing: 1
               }
             }
           }

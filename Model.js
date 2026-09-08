@@ -253,15 +253,123 @@ function heightText(level) {
   return Number(level).toFixed(1) + " m"
 }
 
-// Approximate lunar phase for any instant. The moon's phase is global, so no
-// coordinates are needed. Returns the synodic-month age, the illuminated
-// fraction, and the eight-bin phase name.
-function moonInfo(ms) {
+// ---- Lunar geometry (low-precision Meeus; plenty for a widget moon).
+
+function _rad(d) { return d * Math.PI / 180 }
+function _deg(r) { return r * 180 / Math.PI }
+function _wrap360(d) { return ((d % 360) + 360) % 360 }
+
+function _vec3(ra, dec) {
+  return [Math.cos(dec) * Math.cos(ra), Math.cos(dec) * Math.sin(ra), Math.sin(dec)]
+}
+
+function _dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] }
+function _cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]] }
+function _sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]] }
+function _scale(s, a) { return [s * a[0], s * a[1], s * a[2]] }
+function _norm(a) {
+  var l = Math.sqrt(_dot(a, a))
+  return l < 1e-9 ? null : [a[0] / l, a[1] / l, a[2] / l]
+}
+
+function _eclToEqu(lamDeg, betDeg, epsDeg) {
+  var l = _rad(lamDeg), b = _rad(betDeg), e = _rad(epsDeg)
+  var cosb = Math.cos(b)
+  var x = Math.cos(l) * cosb
+  var y = Math.sin(l) * cosb
+  var z = Math.sin(b)
+  var ye = y * Math.cos(e) - z * Math.sin(e)
+  var ze = y * Math.sin(e) + z * Math.cos(e)
+  return { ra: Math.atan2(ye, x), dec: Math.asin(ze) }
+}
+
+// Geocentric apparent Sun. Returns RA/Dec in radians.
+function _sunEquatorial(T) {
+  var L = _wrap360(280.46646 + 36000.76983 * T + 0.0003032 * T * T)
+  var M = _wrap360(357.52911 + 35999.05029 * T - 0.0001537 * T * T)
+  var C = (1.914602 - 0.004817 * T - 0.000014 * T * T) * Math.sin(_rad(M))
+    + (0.019993 - 0.000101 * T) * Math.sin(_rad(2 * M)) + 0.000289 * Math.sin(_rad(3 * M))
+  var omega = _wrap360(125.04 - 1934.136 * T)
+  var lam = _wrap360(L + C - 0.00569 - 0.00478 * Math.sin(_rad(omega)))
+  var eps = _obliq(T)
+  return _eclToEqu(lam, 0, eps)
+}
+
+function _obliq(T) {
+  return 23.4392911 - 0.0130042 * T
+}
+
+// Geocentric apparent Moon via the low-precision lunar theory. Returns
+// RA/Dec in radians.
+function _moonEquatorial(T) {
+  var Lp = _wrap360(218.3164477 + 481267.88123421 * T - 0.0015786 * T * T + T * T * T / 538841)
+  var D = _wrap360(297.8501921 + 445267.1114034 * T - 0.0018819 * T * T)
+  var M = _wrap360(357.5291092 + 35999.0502909 * T - 0.0001536 * T * T)
+  var Mp = _wrap360(134.9633964 + 477198.8675055 * T + 0.0087414 * T * T)
+  var F = _wrap360(93.2720950 + 483202.0175233 * T - 0.0036539 * T * T)
+  var E = 1 - 0.002516 * T - 0.0000074 * T * T
+
+  // [dD, dM, dMp, dF, arcsec-e6-of-degree amplitude] — principal longitude terms.
+  var lterms = [
+    [0, 0, 1, 0, 6288774], [2, 0, -1, 0, 1274027], [2, 0, 0, 0, 658314],
+    [0, 0, 2, 0, 213618], [0, 1, 0, 0, -185116], [0, 0, 0, 2, -114332],
+    [2, 0, -2, 0, 58793], [2, -1, -1, 0, 57066], [2, 0, 1, 0, 53322],
+    [2, -1, 0, 0, 45758], [0, 1, -1, 0, -40923], [1, 0, 0, 0, -34720],
+    [0, 1, 1, 0, -30383], [2, 0, -2, 2, 15327], [0, 0, 2, 2, -12528],
+    [0, 0, -2, 2, 10980], [4, 0, -1, 0, 10675], [0, 0, 3, 0, 10034],
+    [4, 0, -2, 0, 8548], [2, 1, -1, 0, -7888], [2, 1, 0, 0, -6766],
+    [1, 0, -1, 0, -5163], [1, 0, 1, 0, 4987], [2, -1, 1, 0, 4036],
+    [2, 0, 2, 0, 3994], [4, 0, 0, 0, 3861], [2, 0, -3, 0, 3665],
+    [0, 1, -2, 0, -2689], [2, 0, -1, 2, -2602], [2, 0, -1, -2, 2390]
+  ]
+  var dLambda = 0
+  for (var li = 0; li < lterms.length; li++) {
+    var lt = lterms[li], m2 = Math.abs(lt[1])
+    var f = 1
+    if (m2 === 1) f = E
+    else if (m2 >= 2) f = E * E
+    dLambda += f * lt[4] * Math.sin(_rad(lt[0] * D + lt[1] * M + lt[2] * Mp + lt[3] * F))
+  }
+
+  // Principal latitude terms.
+  var bterms = [
+    [0, 0, 0, 1, 5128122], [0, 0, 1, 1, 280602], [0, 0, 1, -1, 277693],
+    [2, 0, 0, -1, 173237], [2, 0, -1, 1, 55413], [2, 0, -1, -1, 46271],
+    [2, 0, 0, 1, 32573], [0, 0, 2, 1, 17198], [2, 0, 1, -1, 9266],
+    [0, 0, 2, -1, 8822], [2, -1, 0, -1, 8216], [2, 0, -2, -1, 4324],
+    [2, 0, 1, 1, 4200], [2, 1, 0, -1, -3359], [2, -1, -1, 1, 2463],
+    [2, -1, 0, 1, 2211], [2, -1, -1, -1, 2065], [0, 1, -1, -1, -1870]
+  ]
+  var dBeta = 0
+  for (var bi = 0; bi < bterms.length; bi++) {
+    var bt = bterms[bi], em = Math.abs(bt[1])
+    var ef = 1
+    if (em === 1) ef = E
+    else if (em >= 2) ef = E * E
+    dBeta += ef * bt[4] * Math.sin(_rad(bt[0] * D + bt[1] * M + bt[2] * Mp + bt[3] * F))
+  }
+
+  var lam = _wrap360(Lp + dLambda / 1000000)
+  var bet = dBeta / 1000000
+  return _eclToEqu(lam, bet, _obliq(T))
+}
+
+// Lunar phase plus the way the moon appears in the sky from a location.
+//
+// The phase itself is global, but the tilt of the bright limb (how the
+// crescent leans) depends on where you stand: it is the position angle of the
+// bright limb's midpoint relative to the local vertical (parallactic-angle
+// corrected). With no observer coordinates the tilt is 0 — the moon as seen
+// edge-on from a north-polar viewpoint. Positive tilt leans the lit side to
+// the right/east as seen from the surface.
+function moonInfo(ms, observerLatitude, observerLongitude) {
   var i = typeof ms === "number" ? ms : (new Date()).getTime()
+  var jd = i / 86400000 + 2440587.5
+  var T = (jd - 2451545.0) / 36525.0
+
   var synodic = 29.530588853 * 24 * 3600 * 1000
   var newMoonEpoch = Date.UTC(2000, 0, 6, 18, 14, 0)
   var age = ((i - newMoonEpoch) % synodic + synodic) % synodic / synodic
-  var illumination = (1 - Math.cos(2 * Math.PI * age)) / 2
 
   var phase = "New moon"
   if (age < 0.03 || age >= 0.97) phase = "New moon"
@@ -273,7 +381,47 @@ function moonInfo(ms) {
   else if (age < 0.78) phase = "Last quarter"
   else phase = "Waning crescent"
 
-  return { age: age, illumination: illumination, phase: phase }
+  var sun = _sunEquatorial(T)
+  var moon = _moonEquatorial(T)
+  var S = _vec3(sun.ra, sun.dec)
+  var M = _vec3(moon.ra, moon.dec)
+  var cosE = _dot(S, M)
+
+  // waxing when the moon sits east of the sun on the sky.
+  var waxing = _wrap360(_deg(moon.ra) - _deg(sun.ra)) < 180
+  var illumination = Math.max(0, Math.min(1, (1 - cosE) / 2))
+
+  // Bright-limb tilt from the local vertical, via position angle of the sun's
+  // tangent direction minus the parallactic angle to the zenith.
+  var tilt = 0
+  if (typeof observerLatitude === "number" && !isNaN(observerLatitude)) {
+    var lat = _rad(observerLatitude)
+    var lon = _rad(typeof observerLongitude === "number" && !isNaN(observerLongitude) ? observerLongitude : 0)
+    var gst = _wrap360(280.46061837 + 360.98564736629 * (jd - 2451545.0) + 0.000387933 * T * T - T * T * T / 38710000)
+    var lst = _rad(gst) + lon
+    var Z = [Math.cos(lat) * Math.cos(lst), Math.cos(lat) * Math.sin(lst), Math.sin(lat)]
+    var N = [0, 0, 1]
+
+    var east = _norm(_cross(N, M))
+    var north = _norm(_sub(N, _scale(_dot(N, M), M)))
+    var bright = _norm(_sub(S, _scale(cosE, M)))
+    var zenith = _norm(_sub(Z, _scale(_dot(Z, M), M)))
+    if (east && north && bright && zenith) {
+      var chi = Math.atan2(_dot(bright, east), _dot(bright, north))
+      var eta = Math.atan2(_dot(zenith, east), _dot(zenith, north))
+      tilt = chi - eta
+    }
+  }
+
+  return {
+    age: age,
+    ageDays: age * 29.530588853,
+    illumination: illumination,
+    phase: phase,
+    waxing: waxing,
+    tiltDeg: _deg(tilt),
+    tiltRad: tilt
+  }
 }
 
 function arrow(event) {
