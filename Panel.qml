@@ -76,6 +76,11 @@ Panel {
   })()
 
   readonly property string stateText: Model.tideState(root.nextEvent)
+  // Lunar phase is global, so it shows even before any location is picked.
+  readonly property string moonLabel: (function() {
+    var m = Model.moonInfo(root.nowMs)
+    return m.phase.toUpperCase() + " · " + Math.round(m.illumination * 100) + "% LIT"
+  })()
   readonly property color contentForeground: bar ? bar.foreground : Color.foreground
   readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
 
@@ -513,18 +518,33 @@ Panel {
               }
             }
 
-            Text {
+            Column {
               id: headRight
-              textFormat: Text.PlainText
               anchors.right: parent.right
               anchors.rightMargin: root.contentInset
               anchors.verticalCenter: parent.verticalCenter
-              text: root.stateText
-              color: Color.accent
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.caption
-              font.letterSpacing: 1.4
-              font.bold: true
+              spacing: Style.space(2)
+
+              Text {
+                textFormat: Text.PlainText
+                anchors.right: parent.right
+                text: root.stateText
+                color: Color.accent
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                font.letterSpacing: 1.4
+                font.bold: true
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                anchors.right: parent.right
+                text: root.moonLabel
+                color: Qt.darker(root.contentForeground, 1.6)
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                font.letterSpacing: 1
+              }
             }
           }
 

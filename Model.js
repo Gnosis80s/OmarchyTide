@@ -253,6 +253,29 @@ function heightText(level) {
   return Number(level).toFixed(1) + " m"
 }
 
+// Approximate lunar phase for any instant. The moon's phase is global, so no
+// coordinates are needed. Returns the synodic-month age, the illuminated
+// fraction, and the eight-bin phase name.
+function moonInfo(ms) {
+  var i = typeof ms === "number" ? ms : (new Date()).getTime()
+  var synodic = 29.530588853 * 24 * 3600 * 1000
+  var newMoonEpoch = Date.UTC(2000, 0, 6, 18, 14, 0)
+  var age = ((i - newMoonEpoch) % synodic + synodic) % synodic / synodic
+  var illumination = (1 - Math.cos(2 * Math.PI * age)) / 2
+
+  var phase = "New moon"
+  if (age < 0.03 || age >= 0.97) phase = "New moon"
+  else if (age < 0.22) phase = "Waxing crescent"
+  else if (age < 0.28) phase = "First quarter"
+  else if (age < 0.47) phase = "Waxing gibbous"
+  else if (age < 0.53) phase = "Full moon"
+  else if (age < 0.72) phase = "Waning gibbous"
+  else if (age < 0.78) phase = "Last quarter"
+  else phase = "Waning crescent"
+
+  return { age: age, illumination: illumination, phase: phase }
+}
+
 function arrow(event) {
   return event && event.high ? "▲" : "▼"
 }
@@ -345,6 +368,7 @@ if (typeof module !== "undefined") {
     dayShort: dayShort,
     formatDayTime: formatDayTime,
     heightText: heightText,
+    moonInfo: moonInfo,
     arrow: arrow,
     tideState: tideState,
     barLabel: barLabel,

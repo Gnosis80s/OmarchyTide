@@ -5,7 +5,8 @@ A searchable tide bar widget for [Omarchy](https://omarchy.org/).
 Adds a tide pill to the bar showing the next high/low (▲/▼) with a tide-curve
 popup: a live location search picks any coastal place, and its high/low
 extremes drive a rolling 6 h back / 18 h ahead wave, a LOW→HIGH water gauge,
-and the upcoming events. Data comes from the Open Waters tide API
+and the upcoming events. The header also shows the current lunar phase (which
+drives spring/neap tides). Data comes from the Open Waters tide API
 (api.openwaters.io), which resolves the picked place to the nearest published
 tide reference station, and is cached per location so the panel works offline.
 
