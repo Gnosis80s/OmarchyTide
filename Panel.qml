@@ -275,7 +275,7 @@ Panel {
     geocodeProc.running = true
   }
 
-  onConfiguredLocationChanged: {
+  onConfiguredLocationStateChanged: {
     root.editingLocation = false
     root.locationSuggestions = []
     geocodeDebounce.stop()
