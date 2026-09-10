@@ -459,6 +459,31 @@ function locationCommit(text, suggestions, selectedIndex) {
   return choices[index]
 }
 
+// ---- Sunrise / sunset (Open-Meteo daily API).
+
+function parseSunTimes(raw) {
+  try {
+    var data = JSON.parse(String(raw || ""))
+    var daily = data && data.daily
+    if (!daily || !daily.sunrise || !daily.sunset) return null
+    var rise = toMs(daily.sunrise[0])
+    var set = toMs(daily.sunset[0])
+    if (isNaN(rise) || isNaN(set)) return null
+    return { rise: rise, set: set }
+  } catch (e) {
+    return null
+  }
+}
+
+// Normalised sun position: 0.0 at sunrise, 1.0 at sunset, <0 before rise,
+// >1 after set.  Drives the mini sun arc in the panel footer.
+function sunPosition(sunTimes, ms) {
+  if (!sunTimes) return null
+  var span = sunTimes.set - sunTimes.rise
+  if (span <= 0) return null
+  return (ms - sunTimes.rise) / span
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     now: now,
@@ -487,6 +512,8 @@ if (typeof module !== "undefined") {
     parseLocationFile: parseLocationFile,
     locationSlug: locationSlug,
     parseGeocodingResults: parseGeocodingResults,
-    locationCommit: locationCommit
+    locationCommit: locationCommit,
+    parseSunTimes: parseSunTimes,
+    sunPosition: sunPosition
   }
 }

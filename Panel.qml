@@ -13,8 +13,8 @@ import "Model.js" as Model
 // still works offline.
 Panel {
   id: root
-  moduleName: "omarchy.tide"
-  ipcTarget: "omarchy.tide"
+  moduleName: "gnosis.tide"
+  ipcTarget: "gnosis.tide"
   manageIpc: false
 
   property var anchorItem: null
@@ -35,6 +35,7 @@ Panel {
   property real nowMs: 0
   property int extremesRetries: 0
   property int timelineRetries: 0
+  property var sunTimes: null
 
   readonly property string settingsDir: Quickshell.env("HOME") + "/.local/state/omarchy/settings"
 
@@ -54,9 +55,9 @@ Panel {
   property string appliedLocationKey: "\u0000"
   // Sanitized location name keys the per-location disk caches.
   property string cacheSlug: "nolocation"
-  readonly property string locationFilePath: root.settingsDir + "/omarchy-tide-location.json"
-  readonly property string extremesCachePath: root.settingsDir + "/omarchy-tide-" + root.cacheSlug + "-extremes.json"
-  readonly property string timelineCachePath: root.settingsDir + "/omarchy-tide-" + root.cacheSlug + "-timeline.json"
+  readonly property string locationFilePath: root.settingsDir + "/gnosis-tide-location.json"
+  readonly property string extremesCachePath: root.settingsDir + "/gnosis-tide-" + root.cacheSlug + "-extremes.json"
+  readonly property string timelineCachePath: root.settingsDir + "/gnosis-tide-" + root.cacheSlug + "-timeline.json"
 
   readonly property var nextEvent: Model.firstAfter(root.extremes, root.nowMs)
   readonly property var nextHighEvent: Model.firstHighAfter(root.extremes, root.nowMs)
@@ -169,6 +170,7 @@ Panel {
     root.dataFailed = false
     root.extremes = []
     root.timeline = []
+    root.sunTimes = null
     root.dataLoaded = false
     root.tick()
   }
@@ -201,6 +203,7 @@ Panel {
     timelineProc.command = root.fetchCommand(root.timelineBaseUrl, root.timelineCachePath, 12, 36)
     if (!extremesProc.running) extremesProc.running = true
     if (!timelineProc.running) timelineProc.running = true
+    root.fetchSun()
   }
 
   function onExtremesFetched(raw) {
@@ -458,6 +461,32 @@ Panel {
       if (!root.hasLocation) return
       timelineProc.command = root.fetchCommand(root.timelineBaseUrl, root.timelineCachePath, 12, 36)
       if (!timelineProc.running) timelineProc.running = true
+    }
+  }
+
+  // ---- Sunrise / sunset (Open-Meteo daily API).  Fetched once per location
+  //      change; the response covers today so a single call suffices.
+  readonly property string sunUrl: root.hasLocation
+    ? "https://api.open-meteo.com/v1/forecast?latitude=" + encodeURIComponent(String(root.configuredLocationState.latitude))
+      + "&longitude=" + encodeURIComponent(String(root.configuredLocationState.longitude))
+      + "&daily=sunrise,sunset&timezone=auto&forecast_days=1"
+    : ""
+
+  function fetchSun() {
+    if (!root.hasLocation) return
+    sunProc.command = ["bash", "-c",
+      "tmp=\"$0.$$.tmp\"\n" +
+      "curl -fsS --max-time 5 \"" + root.sunUrl + "\" -o \"$tmp\" || { rm -f \"$tmp\"; exit 1; }\n" +
+      "cat \"$tmp\" && rm -f \"$tmp\"",
+      root.settingsDir + "/gnosis-tide-" + root.cacheSlug + "-sun.json"]
+    if (!sunProc.running) sunProc.running = true
+  }
+
+  Process {
+    id: sunProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: { root.sunTimes = Model.parseSunTimes(text) }
     }
   }
 
@@ -845,7 +874,7 @@ Panel {
 
               readonly property real padL: Style.spaceReal(40)
               readonly property real padR: Style.spaceReal(6)
-              readonly property real padT: Style.spaceReal(30)
+              readonly property real padT: Style.spaceReal(22)
               readonly property real padB: Style.spaceReal(18)
               readonly property real x0: wave.padL
               readonly property real x1: wave.width - wave.padR
@@ -930,7 +959,7 @@ Panel {
                 for (var o = -6; o <= 18; o += 6) {
                   var tx = wave.xx(ms + o * 3600 * 1000)
                   if (tx < wave.x0 - Style.spaceReal(2) || tx > wave.x1 + Style.spaceReal(2)) continue
-                  out.push({ x: tx, label: o === 0 ? "NOW" : Model.formatTime(ms + o * 3600 * 1000), now: o === 0 })
+                  out.push({ x: tx, label: Model.formatTime(ms + o * 3600 * 1000), now: o === 0 })
                 }
                 return out
               })()
@@ -1001,7 +1030,8 @@ Panel {
                 }
               }
 
-              // ---- grid: three horizontal level lines with labels.
+              // ---- grid: three faint horizontal level lines (no labels —
+              //      the LOW/HIGH captions below carry the meter values).
               Repeater {
                 model: wave.gridLevels
                 delegate: Item {
@@ -1012,15 +1042,6 @@ Panel {
                     width: wave.x1 - wave.x0
                     height: 1
                     color: Qt.rgba(wave.lineColor.r, wave.lineColor.g, wave.lineColor.b, 0.10)
-                  }
-                  Text {
-                    x: wave.x0 - Style.spaceReal(6) - implicitWidth
-                    y: wave.yOf(parent.modelData) - implicitHeight / 2
-                    text: wave.lvText(parent.modelData)
-                    color: Qt.rgba(wave.lineColor.r, wave.lineColor.g, wave.lineColor.b, 0.55)
-                    font.family: root.contentFontFamily
-                    font.pixelSize: Style.spaceReal(10)
-                    font.bold: true
                   }
                 }
               }
@@ -1049,28 +1070,31 @@ Panel {
                 }
               }
 
-              // ---- high/low event markers with time labels.
+              // ---- high/low event markers: compact ▲/▼ badges sitting on the
+              //      curve. Exact times live on the bottom axis and in the
+              //      LOW/HIGH captions, so nothing floats into the NOW zone
+              //      or overlaps the time ticks.
               Repeater {
                 model: wave.marks
                 delegate: Item {
                   required property var modelData
                   Rectangle {
-                    x: parent.modelData.x - Style.spaceReal(2.4)
-                    y: parent.modelData.y - Style.spaceReal(2.4)
-                    width: Style.spaceReal(4.8)
-                    height: Style.spaceReal(4.8)
+                    x: parent.modelData.x - Style.spaceReal(7.5)
+                    y: parent.modelData.y - Style.spaceReal(7.5)
+                    width: Style.spaceReal(15)
+                    height: Style.spaceReal(15)
                     radius: width / 2
-                    color: Qt.rgba(wave.lineColor.r, wave.lineColor.g, wave.lineColor.b, 0.5)
+                    color: Qt.rgba(Color.popups.background.r, Color.popups.background.g, Color.popups.background.b, 0.92)
+                    border.width: 1
+                    border.color: Qt.rgba(wave.lineColor.r, wave.lineColor.g, wave.lineColor.b, 0.4)
                   }
                   Text {
-                    x: parent.modelData.x - implicitWidth / 2
-                    y: parent.modelData.high
-                      ? parent.modelData.y - Style.spaceReal(13) - implicitHeight
-                      : parent.modelData.y + Style.spaceReal(24)
-                    text: parent.modelData.label
-                    color: parent.modelData.high ? wave.lineColor : Qt.rgba(wave.lineColor.r, wave.lineColor.g, wave.lineColor.b, 0.55)
+                    textFormat: Text.PlainText
+                    anchors.centerIn: parent
+                    text: parent.modelData.high ? "▲" : "▼"
+                    color: parent.modelData.high ? wave.lineColor : Qt.rgba(wave.lineColor.r, wave.lineColor.g, wave.lineColor.b, 0.7)
                     font.family: root.contentFontFamily
-                    font.pixelSize: Style.spaceReal(10)
+                    font.pixelSize: Style.spaceReal(9)
                     font.bold: true
                   }
                 }
@@ -1105,14 +1129,37 @@ Panel {
                 color: wave.lineColor
               }
 
-              Text {
-                x: wave.xNow - implicitWidth / 2
-                y: wave.yTop - Style.spaceReal(2) - implicitHeight
-                text: "NOW"
-                color: wave.lineColor
-                font.family: root.contentFontFamily
-                font.pixelSize: Style.spaceReal(11)
-                font.bold: true
+              // ---- NOW chip: label anchored to the dot, clamped inside the
+              //      plot so it never overlaps the edge labels or the event
+              //      marker labels.
+              Item {
+                x: Math.min(
+                  Math.max(wave.xNow + Style.spaceReal(10), wave.x0 + Style.spaceReal(2)),
+                  wave.x1 - nowChip.implicitWidth - Style.spaceReal(2))
+                y: Math.min(
+                  Math.max(wave.yNow - nowChip.implicitHeight / 2, wave.yTop + Style.spaceReal(2)),
+                  wave.yBase - nowChip.implicitHeight - Style.spaceReal(2))
+                visible: !isNaN(wave.yNow)
+
+                Rectangle {
+                  id: nowChip
+                  width: nowChipLabel.implicitWidth + Style.spaceReal(12)
+                  height: nowChipLabel.implicitHeight + Style.spaceReal(5)
+                  radius: Style.spaceReal(3)
+                  color: Qt.rgba(Color.popups.background.r, Color.popups.background.g, Color.popups.background.b, 0.92)
+                  border.width: 1
+                  border.color: Qt.rgba(wave.lineColor.r, wave.lineColor.g, wave.lineColor.b, 0.4)
+
+                  Text {
+                    id: nowChipLabel
+                    anchors.centerIn: parent
+                    text: "NOW"
+                    color: wave.lineColor
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.spaceReal(10)
+                    font.bold: true
+                  }
+                }
               }
             }
 
@@ -1218,75 +1265,320 @@ Panel {
             }
           }
 
-          // ---- Upcoming events.
-          Column {
+          // ---- Bottom row: upcoming events (left) and the sunrise/sunset
+          //      arc (right), both aligned to the same content insets.
+          Item {
             width: parent.width
-            spacing: Style.space(2)
+            height: Math.max(comingUpCol.implicitHeight, sunCol.implicitHeight)
             visible: root.hasLocation
 
-            Text {
-              textFormat: Text.PlainText
-              anchors.left: parent.left
-              anchors.leftMargin: root.contentInset
-              text: "COMING UP"
-              color: Qt.darker(root.contentForeground, 1.7)
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.caption
-              font.letterSpacing: 1.4
-              font.bold: true
+            // ---- Upcoming events.
+            Column {
+              id: comingUpCol
+              x: root.contentInset
+              anchors.top: parent.top
+              width: Style.space(180)
+              spacing: Style.space(2)
+
+              Text {
+                textFormat: Text.PlainText
+                text: "COMING UP"
+                color: Qt.darker(root.contentForeground, 1.7)
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                font.letterSpacing: 1.4
+                font.bold: true
+              }
+
+              Item { width: parent.width; height: Style.space(6) }
+
+              Repeater {
+                model: root.upcoming
+
+                Item {
+                  required property var modelData
+                  required property int index
+                  width: comingUpCol.width
+                  height: Style.space(24)
+
+                  readonly property bool firstRow: index === 0
+                  readonly property color rowForeground: firstRow ? root.contentForeground : Qt.darker(root.contentForeground, 1.35)
+                  readonly property color rowAccent: firstRow ? Color.accent : Qt.darker(Color.accent, 1.15)
+
+                  Text {
+                    textFormat: Text.PlainText
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(100)
+                    text: Model.formatDayTime(modelData.ms)
+                    color: parent.rowForeground
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.body
+                    font.bold: parent.firstRow
+                  }
+
+                  Text {
+                    textFormat: Text.PlainText
+                    anchors.left: parent.left
+                    anchors.leftMargin: Style.space(102)
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(16)
+                    text: Model.arrow(modelData)
+                    color: parent.rowAccent
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+
+                  Text {
+                    textFormat: Text.PlainText
+                    anchors.left: parent.left
+                    anchors.leftMargin: Style.space(124)
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(52)
+                    text: Model.heightText(modelData.level)
+                    color: parent.rowForeground
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.body
+                  }
+                }
+              }
             }
 
-            Item { width: parent.width; height: Style.space(6) }
+            // ---- Sun: sunrise/sunset arc filling the lower-right corner,
+            //      drawn in the same style as the tide wave.
+            Column {
+              id: sunCol
+              anchors.top: parent.top
+              anchors.right: parent.right
+              anchors.rightMargin: root.contentInset
+              width: parent.width - root.contentInset * 2 - comingUpCol.width - Style.space(24)
+              spacing: Style.space(8)
 
-            Repeater {
-              model: root.upcoming
+              // ---- Daylight header, matching the other section headers.
+              Text {
+                textFormat: Text.PlainText
+                text: "DAYLIGHT"
+                color: Qt.darker(root.contentForeground, 1.7)
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                font.letterSpacing: 1.4
+                font.bold: true
+              }
 
+              // ---- Sun arc chart.
               Item {
-                required property var modelData
-                required property int index
+                id: sunChart
                 width: parent.width
-                height: Style.space(26)
+                height: Style.space(110)
+                visible: root.sunTimes !== null
 
-                readonly property bool firstRow: index === 0
-                readonly property color rowForeground: firstRow ? root.contentForeground : Qt.darker(root.contentForeground, 1.35)
-                readonly property color rowAccent: firstRow ? Color.accent : Qt.darker(Color.accent, 1.15)
+                readonly property real x0: Style.spaceReal(2)
+                readonly property real x1: sunChart.width - Style.spaceReal(2)
+                readonly property real yTop: Style.spaceReal(14)
+                readonly property real yBase: sunChart.height - Style.spaceReal(24)
+                readonly property color lineColor: Color.accent
 
-                Text {
-                  textFormat: Text.PlainText
-                  anchors.left: parent.left
-                  anchors.leftMargin: root.contentInset
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: Style.space(128)
-                  text: Model.formatDayTime(modelData.ms)
-                  color: parent.rowForeground
-                  font.family: root.contentFontFamily
-                  font.pixelSize: Style.font.body
-                  font.bold: parent.firstRow
+                readonly property real dayStart: (function() {
+                  var r = root.sunTimes
+                  if (!r) return 0
+                  var d = new Date(r.rise)
+                  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+                })()
+
+                readonly property real dayEnd: (function() {
+                  var r = root.sunTimes
+                  if (!r) return 0
+                  return sunChart.dayStart + 24 * 3600 * 1000
+                })()
+
+                function xx(t) {
+                  return sunChart.x0 + (t - sunChart.dayStart) / (sunChart.dayEnd - sunChart.dayStart) * (sunChart.x1 - sunChart.x0)
+                }
+
+                function yOf(lv) {
+                  return sunChart.yBase - lv * (sunChart.yBase - sunChart.yTop)
+                }
+
+                // 0 before rise and after set; a sine half-wave in between.
+                function elevationAt(t) {
+                  var r = root.sunTimes
+                  if (!r) return 0
+                  if (t < r.rise || t > r.set) return 0
+                  var p = (t - r.rise) / (r.set - r.rise)
+                  return Math.sin(Math.PI * Math.max(0, Math.min(1, p)))
+                }
+
+                readonly property var arc: (function() {
+                  var r = root.sunTimes
+                  var pts = []
+                  for (var t = sunChart.dayStart; t <= sunChart.dayEnd; t += 30 * 60 * 1000)
+                    pts.push(Qt.point(sunChart.xx(t), sunChart.yOf(sunChart.elevationAt(t))))
+                  return pts
+                })()
+
+                readonly property var arcArea: (function() {
+                  var r = root.sunTimes
+                  var pts = sunChart.arc.slice(0)
+                  pts.push(Qt.point(sunChart.x1, sunChart.yBase))
+                  pts.push(Qt.point(sunChart.x0, sunChart.yBase))
+                  return pts
+                })()
+
+                readonly property real xNow: (function() {
+                  var r = root.sunTimes
+                  if (!r) return sunChart.x0
+                  var t = Math.max(sunChart.dayStart, Math.min(root.nowMs, sunChart.dayEnd))
+                  return sunChart.xx(t)
+                })()
+
+                readonly property real yNow: (function() {
+                  var r = root.sunTimes
+                  if (!r) return sunChart.yBase
+                  return sunChart.yOf(sunChart.elevationAt(root.nowMs))
+                })()
+
+                readonly property real xRise: (function() {
+                  var r = root.sunTimes
+                  return r ? sunChart.xx(r.rise) : sunChart.x0
+                })()
+
+                readonly property real xSet: (function() {
+                  var r = root.sunTimes
+                  return r ? sunChart.xx(r.set) : sunChart.x1
+                })()
+
+                // ---- night shading on either side of the daylight arc.
+                Rectangle {
+                  x: sunChart.x0
+                  y: sunChart.yTop
+                  width: Math.max(0, sunChart.xRise - sunChart.x0)
+                  height: sunChart.yBase - sunChart.yTop
+                  color: Qt.rgba(0, 0, 0, 0.05)
+                }
+
+                Rectangle {
+                  x: sunChart.xSet
+                  y: sunChart.yTop
+                  width: Math.max(0, sunChart.x1 - sunChart.xSet)
+                  height: sunChart.yBase - sunChart.yTop
+                  color: Qt.rgba(0, 0, 0, 0.05)
+                }
+
+                Shape {
+                  anchors.fill: parent
+                  antialiasing: true
+
+                  ShapePath {
+                    strokeColor: "transparent"
+                    fillGradient: LinearGradient {
+                      x1: 0
+                      y1: sunChart.yTop
+                      x2: 0
+                      y2: sunChart.yBase
+                      GradientStop {
+                        position: 0
+                        color: Qt.rgba(sunChart.lineColor.r, sunChart.lineColor.g, sunChart.lineColor.b, 0.03)
+                      }
+                      GradientStop {
+                        position: 0.55
+                        color: Qt.rgba(sunChart.lineColor.r, sunChart.lineColor.g, sunChart.lineColor.b, 0.14)
+                      }
+                      GradientStop {
+                        position: 1
+                        color: Qt.rgba(sunChart.lineColor.r, sunChart.lineColor.g, sunChart.lineColor.b, 0.30)
+                      }
+                    }
+                    PathPolyline { path: sunChart.arcArea }
+                  }
+
+                  ShapePath {
+                    strokeColor: sunChart.lineColor
+                    strokeWidth: 1.9
+                    fillColor: "transparent"
+                    capStyle: ShapePath.RoundCap
+                    joinStyle: ShapePath.RoundJoin
+                    PathPolyline { path: sunChart.arc }
+                  }
+
+                  ShapePath {
+                    strokeColor: Qt.rgba(sunChart.lineColor.r, sunChart.lineColor.g, sunChart.lineColor.b, 0.18)
+                    strokeWidth: 1
+                    startX: sunChart.x0
+                    startY: sunChart.yBase
+                    PathLine { x: sunChart.x1; y: sunChart.yBase }
+                  }
+                }
+
+                // ---- sunrise / sunset boundary hairlines. The times are
+                //      read straight off the chart, tagged at the top of
+                //      each line like axis values. Dashed to tell them apart
+                //      from the solid NOW hairline.
+                Shape {
+                  anchors.fill: parent
+                  antialiasing: true
+                  ShapePath {
+                    strokeColor: Qt.rgba(sunChart.lineColor.r, sunChart.lineColor.g, sunChart.lineColor.b, 0.55)
+                    strokeWidth: 1
+                    strokeStyle: ShapePath.DashLine
+                    dashPattern: [3, 3]
+                    startX: sunChart.xRise
+                    startY: sunChart.yTop
+                    PathLine { x: sunChart.xRise; y: sunChart.yBase }
+                  }
+                }
+
+                Shape {
+                  anchors.fill: parent
+                  antialiasing: true
+                  ShapePath {
+                    strokeColor: Qt.rgba(sunChart.lineColor.r, sunChart.lineColor.g, sunChart.lineColor.b, 0.55)
+                    strokeWidth: 1
+                    strokeStyle: ShapePath.DashLine
+                    dashPattern: [3, 3]
+                    startX: sunChart.xSet
+                    startY: sunChart.yTop
+                    PathLine { x: sunChart.xSet; y: sunChart.yBase }
+                  }
                 }
 
                 Text {
                   textFormat: Text.PlainText
-                  anchors.left: parent.left
-                  anchors.leftMargin: root.contentInset + Style.space(140)
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: Style.space(24)
-                  text: Model.arrow(modelData)
-                  color: parent.rowAccent
+                  x: Math.max(sunChart.x0, Math.min(sunChart.xRise - implicitWidth / 2, sunChart.x1 - implicitWidth))
+                  y: sunChart.yTop
+                  text: root.sunTimes ? Model.formatTime(root.sunTimes.rise) : ""
+                  color: Color.accent
                   font.family: root.contentFontFamily
-                  font.pixelSize: Style.font.bodySmall
+                  font.pixelSize: Style.spaceReal(10)
+                  font.bold: true
                 }
 
                 Text {
                   textFormat: Text.PlainText
-                  anchors.right: parent.right
-                  anchors.rightMargin: root.contentInset
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: Style.space(72)
-                  horizontalAlignment: Text.AlignRight
-                  text: Model.heightText(modelData.level)
-                  color: parent.rowForeground
+                  x: Math.max(sunChart.x0, Math.min(sunChart.xSet - implicitWidth / 2, sunChart.x1 - implicitWidth))
+                  y: sunChart.yTop
+                  text: root.sunTimes ? Model.formatTime(root.sunTimes.set) : ""
+                  color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.7)
                   font.family: root.contentFontFamily
-                  font.pixelSize: Style.font.body
+                  font.pixelSize: Style.spaceReal(10)
+                  font.bold: true
+                }
+
+                // ---- NOW marker.
+                Rectangle {
+                  x: sunChart.xNow - width / 2
+                  y: sunChart.yTop
+                  width: 1
+                  height: sunChart.yBase - sunChart.yTop
+                  color: Qt.rgba(sunChart.lineColor.r, sunChart.lineColor.g, sunChart.lineColor.b, 0.28)
+                }
+
+                Rectangle {
+                  x: sunChart.xNow - Style.spaceReal(4.4)
+                  y: sunChart.yNow - Style.spaceReal(4.4)
+                  width: Style.spaceReal(8.8)
+                  height: Style.spaceReal(8.8)
+                  radius: width / 2
+                  color: sunChart.lineColor
                 }
               }
             }

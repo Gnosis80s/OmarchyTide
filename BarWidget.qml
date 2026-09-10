@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "Model.js" as Model
 
 // Tide pill: a mini water gauge (level between LOW and HIGH of the current
 // half-cycle) next to the next high ("▲ 13:22") or low ("▼ 07:09"), with a
@@ -10,11 +11,25 @@ import qs.Ui
 // middle click refreshes, right click toggles nothing yet.
 BarWidget {
   id: root
-  moduleName: "omarchy.tide"
+  moduleName: "gnosis.tide"
 
   readonly property var panel: panelLoader.item
   readonly property real phaseFraction: panel && panel.phaseInfo ? panel.phaseInfo.fraction : 0
   readonly property bool hasData: panel ? panel.label !== "" && panel.label !== "…" : false
+
+  // Hover tooltip: location + tide state + current level. Adds the context the
+  // pill itself cannot show (which shore, which phase, how high right now).
+  readonly property string tooltip: (function() {
+    var p = panelLoader.item
+    if (!p) return ""
+    if (!p.hasLocation) return "Search for a coastal place"
+    var level = p.tideNow && p.tideNow.level ? Model.heightText(p.tideNow.level) : ""
+    if (p.dataLoaded && level !== "") {
+      return p.displayLocationName + " · " + p.stateText + " · NOW " + level
+    }
+    if (p.dataFailed) return p.displayLocationName + " · no tide data"
+    return p.displayLocationName + " · …"
+  })()
 
   function injectPanel() {
     var target = panelLoader.item
@@ -81,8 +96,7 @@ BarWidget {
     labelVisible: false
     horizontalMargin: 7
     verticalPadding: 7
-    // Tooltip suppressed because the panel is the detail view.
-    tooltipText: ""
+    tooltipText: root.tooltip
 
     onPressed: function(b) {
       if (b === Qt.MiddleButton) root.refresh()
