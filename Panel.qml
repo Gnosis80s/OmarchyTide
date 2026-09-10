@@ -13,8 +13,8 @@ import "Model.js" as Model
 // still works offline.
 Panel {
   id: root
-  moduleName: "whitleybay.tide"
-  ipcTarget: "whitleybay.tide"
+  moduleName: "omarchy.tide"
+  ipcTarget: "omarchy.tide"
   manageIpc: false
 
   property var anchorItem: null
@@ -54,9 +54,9 @@ Panel {
   property string appliedLocationKey: "\u0000"
   // Sanitized location name keys the per-location disk caches.
   property string cacheSlug: "nolocation"
-  readonly property string locationFilePath: root.settingsDir + "/whitleybay-tide-location.json"
-  readonly property string extremesCachePath: root.settingsDir + "/whitleybay-tide-" + root.cacheSlug + "-extremes.json"
-  readonly property string timelineCachePath: root.settingsDir + "/whitleybay-tide-" + root.cacheSlug + "-timeline.json"
+  readonly property string locationFilePath: root.settingsDir + "/omarchy-tide-location.json"
+  readonly property string extremesCachePath: root.settingsDir + "/omarchy-tide-" + root.cacheSlug + "-extremes.json"
+  readonly property string timelineCachePath: root.settingsDir + "/omarchy-tide-" + root.cacheSlug + "-timeline.json"
 
   readonly property var nextEvent: Model.firstAfter(root.extremes, root.nowMs)
   readonly property var nextHighEvent: Model.firstHighAfter(root.extremes, root.nowMs)
@@ -1066,7 +1066,7 @@ Panel {
                     x: parent.modelData.x - implicitWidth / 2
                     y: parent.modelData.high
                       ? parent.modelData.y - Style.spaceReal(13) - implicitHeight
-                      : parent.modelData.y + Style.spaceReal(13)
+                      : parent.modelData.y + Style.spaceReal(24)
                     text: parent.modelData.label
                     color: parent.modelData.high ? wave.lineColor : Qt.rgba(wave.lineColor.r, wave.lineColor.g, wave.lineColor.b, 0.55)
                     font.family: root.contentFontFamily
@@ -1244,7 +1244,7 @@ Panel {
               Item {
                 required property var modelData
                 required property int index
-                width: parent.width - Style.space(40)
+                width: parent.width
                 height: Style.space(26)
 
                 readonly property bool firstRow: index === 0
@@ -1254,6 +1254,7 @@ Panel {
                 Text {
                   textFormat: Text.PlainText
                   anchors.left: parent.left
+                  anchors.leftMargin: root.contentInset
                   anchors.verticalCenter: parent.verticalCenter
                   width: Style.space(128)
                   text: Model.formatDayTime(modelData.ms)
@@ -1266,7 +1267,7 @@ Panel {
                 Text {
                   textFormat: Text.PlainText
                   anchors.left: parent.left
-                  anchors.leftMargin: Style.space(140)
+                  anchors.leftMargin: root.contentInset + Style.space(140)
                   anchors.verticalCenter: parent.verticalCenter
                   width: Style.space(24)
                   text: Model.arrow(modelData)
@@ -1278,6 +1279,7 @@ Panel {
                 Text {
                   textFormat: Text.PlainText
                   anchors.right: parent.right
+                  anchors.rightMargin: root.contentInset
                   anchors.verticalCenter: parent.verticalCenter
                   width: Style.space(72)
                   horizontalAlignment: Text.AlignRight

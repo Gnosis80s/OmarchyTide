@@ -10,7 +10,7 @@ import qs.Ui
 // middle click refreshes, right click toggles nothing yet.
 BarWidget {
   id: root
-  moduleName: "whitleybay.tide"
+  moduleName: "omarchy.tide"
 
   readonly property var panel: panelLoader.item
   readonly property real phaseFraction: panel && panel.phaseInfo ? panel.phaseInfo.fraction : 0
