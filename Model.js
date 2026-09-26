@@ -461,18 +461,100 @@ function locationCommit(text, suggestions, selectedIndex) {
 
 // ---- Sunrise / sunset (Open-Meteo daily API).
 
-function parseSunTimes(raw) {
+// Requested with timeformat=unixtime, so the times arrive as absolute epoch
+// seconds and utc_offset_seconds carries the location's own UTC offset. That
+// keeps every instant unambiguous: the panel never has to interpret a bare
+// wall-clock string in the desktop's timezone, so a place picked on the other
+// side of the planet reports its own sunrise instead of one shifted by the
+// machine's offset.
+//
+// Two days are requested so the day charted is always the *location's* current
+// local day (not the desktop's), and so the sunrise following tonight's sunset
+// is a published time rather than a +24 h guess.
+function parseSunTimes(raw, nowMs) {
   try {
     var data = JSON.parse(String(raw || ""))
     var daily = data && data.daily
     if (!daily || !daily.sunrise || !daily.sunset) return null
-    var rise = toMs(daily.sunrise[0])
-    var set = toMs(daily.sunset[0])
-    if (isNaN(rise) || isNaN(set)) return null
-    return { rise: rise, set: set }
+    var offsetMs = Number(data.utc_offset_seconds) * 1000
+    if (isNaN(offsetMs)) offsetMs = 0
+    var days = []
+    for (var i = 0; i < daily.sunrise.length && i < daily.sunset.length; i++) {
+      var rise = dailyMs(daily.sunrise[i], offsetMs)
+      var set = dailyMs(daily.sunset[i], offsetMs)
+      if (isNaN(rise) || isNaN(set)) continue
+      days.push({ rise: rise, set: set })
+    }
+    if (days.length === 0) return null
+    var reference = typeof nowMs === "number" ? nowMs : now()
+    var today = localDayStart(reference, offsetMs)
+    var index = -1
+    for (var j = 0; j < days.length; j++) {
+      if (localDayStart(days[j].rise, offsetMs) === today) { index = j; break }
+    }
+    if (index < 0) {
+      // No entry for the location's current day — the response straddled local
+      // midnight, or a polar day/night left that day without a sunrise. Prefer
+      // the day in progress, else the nearest entry, so a stale day is never
+      // shown in place of an upcoming one.
+      index = -1
+      for (var k = 0; k < days.length; k++) {
+        var untilNext = k + 1 < days.length ? days[k + 1].rise : Infinity
+        if (days[k].rise <= reference && reference < untilNext) { index = k; break }
+      }
+      if (index < 0) {
+        index = 0
+        for (var m = 1; m < days.length; m++) {
+          if (Math.abs(days[m].rise - reference) < Math.abs(days[index].rise - reference)) index = m
+        }
+      }
+    }
+    var next = days[index + 1]
+    return {
+      rise: days[index].rise,
+      set: days[index].set,
+      nextRise: next ? next.rise : null,
+      offsetMs: offsetMs
+    }
   } catch (e) {
     return null
   }
+}
+
+// A daily time from the response, as an absolute instant. The API is asked for
+// epoch seconds, but an ISO string is accepted too: with an offset (or Z) it
+// is used as-is, and without one the wall-clock fields are read as the
+// *location's* — never as the desktop's. A null entry (polar night publishes no
+// sunrise) yields NaN so the caller can skip the day.
+function dailyMs(value, offsetMs) {
+  if (value === undefined || value === null || value === "") return NaN
+  if (typeof value === "number") return isNaN(value) ? NaN : value * 1000
+  var text = String(value).trim()
+  if (text === "" || text === "null") return NaN
+  if (/^[0-9.]+$/.test(text)) return Number(text) * 1000
+  var t = new Date(text)
+  if (isNaN(t.getTime())) return NaN
+  if (/(Z|[+-][0-9]{2}:?[0-9]{2})$/.test(text)) return t.getTime()
+  // Rebuilt as if the fields were UTC, then shifted onto the location's offset.
+  return Date.UTC(t.getFullYear(), t.getMonth(), t.getDate(), t.getHours(), t.getMinutes(), t.getSeconds(), t.getMilliseconds()) - (offsetMs || 0)
+}
+
+// Local midnight of the day containing `ms` in a zone `offsetMs` east of UTC,
+// as an absolute instant. Local wall clock runs `offsetMs` ahead of UTC, so
+// local midnight is the UTC instant at which (t + offsetMs) lands on a day
+// boundary.
+function localDayStart(ms, offsetMs) {
+  var off = offsetMs || 0
+  return Math.floor((ms + off) / 86400000) * 86400000 - off
+}
+
+// Wall-clock time as the location's own clock reads it, whatever the desktop's
+// timezone is. Sunrise/sunset labels use this so they match the times the API
+// reported for the picked place.
+function formatTimeAt(ms, offsetMs) {
+  if (ms === undefined || ms === null || isNaN(ms)) return "—"
+  var d = new Date(ms + (offsetMs || 0))
+  return two(d.getUTCHours()) + ":" + two(d.getUTCMinutes())
 }
 
 // Normalised sun position: 0.0 at sunrise, 1.0 at sunset, <0 before rise,
@@ -486,15 +568,21 @@ function sunPosition(sunTimes, ms) {
 
 // Daylight status at an instant: whether the sun is up, and either the time
 // left until sunset (daylight) or the time until the next sunrise (dark).
-// "Until daylight" after sunset uses tomorrow's sunrise, approximated by
-// today's sunrise + 24 h — the fetch only covers one day.
+// Both instants come from the response already resolved to the location's own
+// timezone, so the comparison is against real time, not the desktop's day.
+// Before dawn the next sunrise is the same day's; after sunset it is the
+// following day's published rise, falling back to rise + 24 h when the fetch
+// only covered one day.
 function daylightStatus(sunTimes, ms) {
   if (!sunTimes) return null
   var rise = sunTimes.rise
   var set = sunTimes.set
   if (ms >= rise && ms < set) return { daylight: true, remainingMs: set - ms }
-  var untilRise = ms < rise ? rise - ms : rise + 24 * 3600 * 1000 - ms
-  return { daylight: false, untilMs: untilRise }
+  if (ms < rise) return { daylight: false, untilMs: rise - ms }
+  var nextRise = sunTimes.nextRise === undefined || sunTimes.nextRise === null
+    ? rise + 24 * 3600 * 1000
+    : sunTimes.nextRise
+  return { daylight: false, untilMs: nextRise - ms }
 }
 
 // "5H 12M" — a compact hours + minutes duration for the daylight readout.
@@ -536,6 +624,9 @@ if (typeof module !== "undefined") {
     parseGeocodingResults: parseGeocodingResults,
     locationCommit: locationCommit,
     parseSunTimes: parseSunTimes,
+    dailyMs: dailyMs,
+    localDayStart: localDayStart,
+    formatTimeAt: formatTimeAt,
     sunPosition: sunPosition,
     daylightStatus: daylightStatus,
     durationText: durationText

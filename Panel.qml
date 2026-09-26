@@ -36,6 +36,16 @@ Panel {
   property int extremesRetries: 0
   property int timelineRetries: 0
   property var sunTimes: null
+  // The location the in-flight sun request is for ("" when idle). Requests are
+  // single-flight: a location picked mid-request is answered afterwards instead
+  // of being dropped, and a reply for a place the user has moved off from is
+  // discarded rather than painted over the new one.
+  property string sunActiveKey: ""
+  property int sunRetries: 0
+  // Location whose cached daylight read is outstanding, "" when none is. Doubles
+  // as the guard against a late read — or a fresh response — landing for a place
+  // the user has already moved off from.
+  property string sunCachePending: ""
 
   readonly property string settingsDir: Quickshell.env("HOME") + "/.local/state/omarchy/settings"
 
@@ -177,15 +187,19 @@ Panel {
   function loadCaches() {
     extremesCacheFile.reload()
     timelineCacheFile.reload()
+    root.sunCachePending = root.sunRequestKey
+    sunCacheFile.reload()
   }
 
   function clearData() {
     root.extremesRetries = 0
     root.timelineRetries = 0
+    root.sunRetries = 0
     root.dataFailed = false
     root.extremes = []
     root.timeline = []
     root.sunTimes = null
+    root.sunCachePending = ""
     root.dataLoaded = false
     root.tick()
   }
@@ -218,7 +232,7 @@ Panel {
     timelineProc.command = root.fetchCommand(root.timelineBaseUrl, root.timelineCachePath, 12, 36)
     if (!extremesProc.running) extremesProc.running = true
     if (!timelineProc.running) timelineProc.running = true
-    root.fetchSun()
+    root.requestSun()
   }
 
   function onExtremesFetched(raw) {
@@ -479,29 +493,121 @@ Panel {
     }
   }
 
-  // ---- Sunrise / sunset (Open-Meteo daily API).  Fetched once per location
-  //      change; the response covers today so a single call suffices.
+  // ---- Sunrise / sunset (Open-Meteo daily API).  Refetched on every location
+  //      change, on open, and by the ten-minute refresh. timeformat=unixtime
+  //      makes the times absolute and hands back the location's
+  //      utc_offset_seconds, so the daylight section follows the picked place
+  //      rather than the desktop's timezone; two days are asked for so "today"
+  //      is the location's today and tomorrow's sunrise is real.
   readonly property string sunUrl: root.hasLocation
     ? "https://api.open-meteo.com/v1/forecast?latitude=" + encodeURIComponent(String(root.configuredLocationState.latitude))
       + "&longitude=" + encodeURIComponent(String(root.configuredLocationState.longitude))
-      + "&daily=sunrise,sunset&timezone=auto&forecast_days=1"
+      + "&daily=sunrise,sunset&timezone=auto&timeformat=unixtime&forecast_days=2"
     : ""
+  readonly property string sunRequestKey: root.hasLocation
+    ? String(root.configuredLocationState.latitude) + "," + String(root.configuredLocationState.longitude)
+    : ""
+  readonly property string sunCachePath: root.settingsDir + "/gnosis-tide-" + root.cacheSlug + "-sun.json"
 
-  function fetchSun() {
+  // Asks for the current location's daylight data, at most one request at a
+  // time. A location picked while a request is in flight is not lost: the key
+  // it needs no longer matches sunActiveKey, so the re-arm on completion picks
+  // it up. Skipped entirely when the right request is already running, which
+  // also keeps the ten-minute refresh from piling up duplicates.
+  function requestSun() {
     if (!root.hasLocation) return
+    if (root.sunActiveKey === root.sunRequestKey) return
+    if (sunProc.running) return
+    root.sunActiveKey = root.sunRequestKey
     sunProc.command = ["bash", "-c",
       "tmp=\"$0.$$.tmp\"\n" +
-      "curl -fsS --max-time 5 \"" + root.sunUrl + "\" -o \"$tmp\" || { rm -f \"$tmp\"; exit 1; }\n" +
-      "cat \"$tmp\" && rm -f \"$tmp\"",
-      root.settingsDir + "/gnosis-tide-" + root.cacheSlug + "-sun.json"]
-    if (!sunProc.running) sunProc.running = true
+      "curl -fsS --max-time 8 \"" + root.sunUrl + "\" -o \"$tmp\" || { rm -f \"$tmp\"; exit 1; }\n" +
+      "mkdir -p \"$(dirname \"$0\")\" && mv -f \"$tmp\" \"$0\" && cat \"$0\"",
+      root.sunCachePath]
+    sunProc.running = true
+  }
+
+  function onSunFetched(raw) {
+    // `finished` is the request this body belongs to. A reply for a place the
+    // user has already moved off from must not land.
+    var finished = root.sunActiveKey
+    if (finished !== "" && finished === root.sunRequestKey) {
+      var parsed = Model.parseSunTimes(raw, root.nowMs)
+      if (parsed) {
+        root.sunRetries = 0
+        root.sunCachePending = ""
+        root.sunTimes = parsed
+        root.sunFetchSettled(finished)
+        return
+      }
+      root.retrySun()
+    } else if (finished === "") {
+      // A body with no request to attribute it to cannot be trusted for the
+      // current location. Ask again rather than leave the section blank;
+      // single-flight, so this cannot pile up.
+      Qt.callLater(root.requestSun)
+    }
+    root.sunFetchSettled(finished)
+  }
+
+  // Releases the single-flight slot for the request that just ended, and — if
+  // the location moved while it was running — asks for the new one straight
+  // away. This is what makes the daylight section follow a pick made mid-request.
+  //
+  // The ended key is passed in rather than read from the slot, and the slot is
+  // only cleared when it still holds that key: the exit path releases a turn
+  // later, by which point the re-arm may already have launched a *newer*
+  // request, and that newer request's slot must survive untouched. Clearing it
+  // would make the new response look stale, and it would then be discarded with
+  // nothing left to ask again — the section would stay blank until reopen.
+  function sunFetchSettled(finished) {
+    if (finished === undefined || finished === "") return
+    if (root.sunActiveKey !== finished) return
+    root.sunActiveKey = ""
+    if (finished !== root.sunRequestKey) Qt.callLater(root.requestSun)
+  }
+
+  function retrySun() {
+    if (!root.hasLocation || root.sunRetries >= 3) return
+    root.sunRetries++
+    sunRetryTimer.restart()
   }
 
   Process {
     id: sunProc
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: { root.sunTimes = Model.parseSunTimes(text) }
+      onStreamFinished: root.onSunFetched(text)
+    }
+    onExited: function(exitCode) {
+      // A failed request yields no body for onSunFetched to reject, so the
+      // retry is armed here. Which request ended is captured now, while the slot
+      // still holds it, and the release waits a turn so a stdout close landing
+      // after the exit is still matched to the request it belongs to.
+      if (exitCode !== 0) root.retrySun()
+      var done = root.sunActiveKey
+      Qt.callLater(function() { root.sunFetchSettled(done) })
+    }
+  }
+
+  Timer {
+    id: sunRetryTimer
+    interval: 3000
+    onTriggered: root.requestSun()
+  }
+
+  // Cached daylight survives the network being gone and paints the section
+  // immediately on a location picked again; keyed per location like the tides.
+  FileView {
+    id: sunCacheFile
+    path: root.sunCachePath
+    watchChanges: false
+    printErrors: false
+    onLoaded: {
+      if (root.sunCachePending === "" || root.sunCachePending !== root.sunRequestKey) return
+      root.sunCachePending = ""
+      var parsed = Model.parseSunTimes(text(), root.nowMs)
+      if (parsed) root.sunTimes = parsed
     }
   }
 
@@ -1418,11 +1524,13 @@ Panel {
                 readonly property real yBase: sunChart.height - Style.spaceReal(24)
                 readonly property color lineColor: Color.accent
 
+                // The chart spans one *local* day at the picked location —
+                // midnight to midnight on the location's own clock, so the arc
+                // sits over that place's daytime rather than the desktop's.
                 readonly property real dayStart: (function() {
                   var r = root.sunTimes
                   if (!r) return 0
-                  var d = new Date(r.rise)
-                  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+                  return Model.localDayStart(r.rise, r.offsetMs)
                 })()
 
                 readonly property real dayEnd: (function() {
@@ -1585,7 +1693,7 @@ Panel {
                   textFormat: Text.PlainText
                   x: Math.max(sunChart.x0, Math.min(sunChart.xRise - implicitWidth / 2, sunChart.x1 - implicitWidth))
                   y: sunChart.yTop
-                  text: root.sunTimes ? Model.formatTime(root.sunTimes.rise) : ""
+                  text: root.sunTimes ? Model.formatTimeAt(root.sunTimes.rise, root.sunTimes.offsetMs) : ""
                   color: Color.accent
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.spaceReal(10)
@@ -1596,7 +1704,7 @@ Panel {
                   textFormat: Text.PlainText
                   x: Math.max(sunChart.x0, Math.min(sunChart.xSet - implicitWidth / 2, sunChart.x1 - implicitWidth))
                   y: sunChart.yTop
-                  text: root.sunTimes ? Model.formatTime(root.sunTimes.set) : ""
+                  text: root.sunTimes ? Model.formatTimeAt(root.sunTimes.set, root.sunTimes.offsetMs) : ""
                   color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.7)
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.spaceReal(10)

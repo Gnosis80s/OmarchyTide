@@ -15,7 +15,9 @@ Opening the pill rows out a panel with:
 - **Daylight** — the day's sun arc with dashed sunrise/sunset hairlines (times
   read straight off the chart) and a dot marking the sun's position right now.
   Also shown: night shading outside the daylight window, and how long is left
-  in daylight (or, after dark, how long until daylight).
+  in daylight (or, after dark, how long until daylight). The arc spans one
+  local day *at the picked location*, and every time shown is that place's own
+  wall clock — the desktop's timezone is never applied.
 - **Moon phase** — a drawn lunar disc (lit side facing the sun, waxing right,
   waning left) with phase, % lit, and age alongside.
 
