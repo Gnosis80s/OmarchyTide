@@ -484,6 +484,28 @@ function sunPosition(sunTimes, ms) {
   return (ms - sunTimes.rise) / span
 }
 
+// Daylight status at an instant: whether the sun is up, and either the time
+// left until sunset (daylight) or the time until the next sunrise (dark).
+// "Until daylight" after sunset uses tomorrow's sunrise, approximated by
+// today's sunrise + 24 h — the fetch only covers one day.
+function daylightStatus(sunTimes, ms) {
+  if (!sunTimes) return null
+  var rise = sunTimes.rise
+  var set = sunTimes.set
+  if (ms >= rise && ms < set) return { daylight: true, remainingMs: set - ms }
+  var untilRise = ms < rise ? rise - ms : rise + 24 * 3600 * 1000 - ms
+  return { daylight: false, untilMs: untilRise }
+}
+
+// "5H 12M" — a compact hours + minutes duration for the daylight readout.
+function durationText(ms) {
+  var total = Math.max(0, Math.round(ms / 1000))
+  var h = Math.floor(total / 3600)
+  var m = Math.floor((total % 3600) / 60)
+  if (h > 0) return h + "H " + two(m) + "M"
+  return m + "M"
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     now: now,
@@ -514,6 +536,8 @@ if (typeof module !== "undefined") {
     parseGeocodingResults: parseGeocodingResults,
     locationCommit: locationCommit,
     parseSunTimes: parseSunTimes,
-    sunPosition: sunPosition
+    sunPosition: sunPosition,
+    daylightStatus: daylightStatus,
+    durationText: durationText
   }
 }

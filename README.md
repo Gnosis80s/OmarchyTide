@@ -14,7 +14,8 @@ Opening the pill rows out a panel with:
   how far the tide will still move (range %).
 - **Daylight** — the day's sun arc with dashed sunrise/sunset hairlines (times
   read straight off the chart) and a dot marking the sun's position right now.
-  Also shown: night shading outside the daylight window.
+  Also shown: night shading outside the daylight window, and how long is left
+  in daylight (or, after dark, how long until daylight).
 - **Moon phase** — a drawn lunar disc (lit side facing the sun, waxing right,
   waning left) with phase, % lit, and age alongside.
 

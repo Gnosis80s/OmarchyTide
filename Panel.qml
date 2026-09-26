@@ -83,6 +83,14 @@ Panel {
     if (!root.moon) return ""
     return Math.round(root.moon.illumination * 100) + "% LIT · AGE " + root.moon.ageDays.toFixed(1) + " DAYS"
   })()
+  readonly property var daylightInfo: Model.daylightStatus(root.sunTimes, root.nowMs)
+  readonly property string daylightText: (function() {
+    var s = root.daylightInfo
+    if (!s) return ""
+    return s.daylight
+      ? Model.durationText(s.remainingMs) + " LEFT"
+      : Model.durationText(s.untilMs) + " TO DAYLIGHT"
+  })()
   readonly property color contentForeground: bar ? bar.foreground : Color.foreground
   readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
 
@@ -879,8 +887,10 @@ Panel {
               property var nowMs: root.nowMs
               property color lineColor: Color.accent
 
-              readonly property real padL: Style.spaceReal(40)
-              readonly property real padR: Style.spaceReal(6)
+              // Symmetric gutters on the wave: the outermost time labels sit
+              // on the plot's own edges, so both sides need the same room.
+              readonly property real padL: Style.spaceReal(16)
+              readonly property real padR: Style.spaceReal(16)
               readonly property real padT: Style.spaceReal(22)
               readonly property real padB: Style.spaceReal(18)
               readonly property real x0: wave.padL
@@ -1361,15 +1371,38 @@ Panel {
               width: parent.width - root.contentInset * 2 - comingUpCol.width - Style.space(24)
               spacing: Style.space(8)
 
-              // ---- Daylight header, matching the other section headers.
-              Text {
-                textFormat: Text.PlainText
-                text: "DAYLIGHT"
-                color: root.onFg(0.55)
-                font.family: root.contentFontFamily
-                font.pixelSize: Style.font.caption
-                font.letterSpacing: 1.4
-                font.bold: true
+              // ---- Daylight header, matching the other section headers, with
+              //      the remaining/until-daylight readout on the right.
+              Item {
+                width: parent.width
+                height: Math.max(daylightHeaderTitle.implicitHeight, daylightHeaderNote.implicitHeight)
+
+                Text {
+                  id: daylightHeaderTitle
+                  textFormat: Text.PlainText
+                  anchors.left: parent.left
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "DAYLIGHT"
+                  color: root.onFg(0.55)
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                  font.letterSpacing: 1.4
+                  font.bold: true
+                }
+
+                Text {
+                  id: daylightHeaderNote
+                  textFormat: Text.PlainText
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: root.daylightText
+                  color: Color.accent
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                  font.letterSpacing: 1
+                  font.bold: true
+                  visible: text !== ""
+                }
               }
 
               // ---- Sun arc chart.
