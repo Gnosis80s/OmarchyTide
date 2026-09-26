@@ -86,6 +86,13 @@ Panel {
   readonly property color contentForeground: bar ? bar.foreground : Color.foreground
   readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
 
+  // Secondary/muted text is alpha-blended against the panel background so it
+  // tracks the active theme on both dark and light surfaces. `Qt.darker` is
+  // deliberately avoided: it darkens an already-dark foreground on a light
+  // theme, making muted text *more* prominent instead of less.
+  function onFg(a) { return Util.alpha(root.contentForeground, a) }
+  function onAccent(a) { return Util.alpha(Color.accent, a) }
+
   property var curveSamples: []
   property var phaseExtremes: []
 
@@ -612,7 +619,7 @@ Panel {
                   textFormat: Text.PlainText
                   width: Style.space(300)
                   text: root.moonSubline
-                  color: Qt.darker(root.contentForeground, 1.6)
+                  color: root.onFg(0.6)
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.caption
                   font.letterSpacing: 1
@@ -686,7 +693,7 @@ Panel {
                   text: root.displayLocationName === ""
                     ? "Tap to find a coastal place for its tide times"
                     : "TAP TO CHANGE LOCATION"
-                  color: Qt.darker(root.contentForeground, 1.7)
+                  color: root.onFg(0.55)
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.caption
                   font.letterSpacing: 1.1
@@ -768,7 +775,7 @@ Panel {
                         textFormat: Text.PlainText
                         visible: text !== ""
                         text: modelData.description
-                        color: Qt.darker(root.contentForeground, 1.5)
+                        color: root.onFg(0.62)
                         font.family: root.contentFontFamily
                         font.pixelSize: Style.font.bodySmall
                         anchors.verticalCenter: parent.verticalCenter
@@ -789,7 +796,7 @@ Panel {
               Text {
                 visible: locationField.text.trim().length >= 2 && root.locationSuggestions.length === 0
                 text: "No coastal matches — try another place."
-                color: Qt.darker(root.contentForeground, 1.6)
+                color: root.onFg(0.6)
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.bodySmall
                 font.italic: true
@@ -811,7 +818,7 @@ Panel {
             width: parent.width - root.contentInset * 2
             anchors.horizontalCenter: parent.horizontalCenter
             text: "No tide data for this location — try a nearby coastline."
-            color: Qt.darker(root.contentForeground, 1.6)
+            color: root.onFg(0.6)
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.bodySmall
             font.italic: true
@@ -835,7 +842,7 @@ Panel {
                 anchors.leftMargin: root.contentInset
                 anchors.verticalCenter: parent.verticalCenter
                 text: "TIDE PHASE"
-                color: Qt.darker(root.contentForeground, 1.7)
+                color: root.onFg(0.55)
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.caption
                 font.letterSpacing: 1.4
@@ -849,7 +856,7 @@ Panel {
                 anchors.rightMargin: root.contentInset
                 anchors.verticalCenter: parent.verticalCenter
                 text: "6 H BACK · 18 H AHEAD"
-                color: Qt.darker(root.contentForeground, 2.2)
+                color: root.onFg(0.42)
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.caption
                 font.letterSpacing: 1
@@ -1186,7 +1193,7 @@ Panel {
                   text: root.phaseInfo
                     ? "LOW ▼ " + Model.formatTime(root.phaseInfo.low.ms) + "  ·  " + Model.heightText(root.phaseInfo.low.level)
                     : "LOW"
-                  color: Qt.darker(root.contentForeground, 1.6)
+                  color: root.onFg(0.6)
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.caption
                   font.letterSpacing: 1
@@ -1202,7 +1209,7 @@ Panel {
                   text: root.phaseInfo
                     ? "HIGH ▲ " + Model.formatTime(root.phaseInfo.high.ms) + "  ·  " + Model.heightText(root.phaseInfo.high.level)
                     : "HIGH"
-                  color: Qt.darker(root.contentForeground, 1.6)
+                  color: root.onFg(0.6)
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.caption
                   font.letterSpacing: 1
@@ -1256,7 +1263,7 @@ Panel {
                 text: root.phaseInfo
                   ? root.stateText + "  ·  " + Math.round(root.phaseInfo.fraction * 100) + "% OF RANGE  ·  NOW " + Model.heightText(root.phaseInfo.level)
                   : "…"
-                color: Qt.darker(root.contentForeground, 1.45)
+                color: root.onFg(0.65)
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.caption
                 font.letterSpacing: 1
@@ -1283,7 +1290,7 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 text: "COMING UP"
-                color: Qt.darker(root.contentForeground, 1.7)
+                color: root.onFg(0.55)
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.caption
                 font.letterSpacing: 1.4
@@ -1302,8 +1309,8 @@ Panel {
                   height: Style.space(24)
 
                   readonly property bool firstRow: index === 0
-                  readonly property color rowForeground: firstRow ? root.contentForeground : Qt.darker(root.contentForeground, 1.35)
-                  readonly property color rowAccent: firstRow ? Color.accent : Qt.darker(Color.accent, 1.15)
+                  readonly property color rowForeground: firstRow ? root.contentForeground : root.onFg(0.72)
+                  readonly property color rowAccent: firstRow ? Color.accent : root.onAccent(0.85)
 
                   Text {
                     textFormat: Text.PlainText
@@ -1358,7 +1365,7 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 text: "DAYLIGHT"
-                color: Qt.darker(root.contentForeground, 1.7)
+                color: root.onFg(0.55)
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.caption
                 font.letterSpacing: 1.4
@@ -1612,7 +1619,7 @@ Panel {
                 text: root.displayLocationName === ""
                   ? "TIDE DATA"
                   : root.displayLocationName.toUpperCase()
-                color: Qt.darker(root.contentForeground, 1.9)
+                color: root.onFg(0.48)
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.caption
                 font.letterSpacing: 1
@@ -1627,7 +1634,7 @@ Panel {
               anchors.top: parent.top
               anchors.topMargin: Style.space(10)
               text: "OPENWATERS.IO"
-              color: Qt.darker(root.contentForeground, 1.9)
+              color: root.onFg(0.48)
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
               font.letterSpacing: 1
