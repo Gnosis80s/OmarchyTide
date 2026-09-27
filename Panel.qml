@@ -42,6 +42,13 @@ Panel {
   // discarded rather than painted over the new one.
   property string sunActiveKey: ""
   property int sunRetries: 0
+  // Same contract for the two tide streams, one key each so a slow extremes
+  // request cannot release a timeline request that is still in flight. Without
+  // this the new location's request was silently dropped whenever a fetch
+  // happened to be running, and the previous place's tides stayed on screen
+  // until the plugin was restarted.
+  property string extremesActiveKey: ""
+  property string timelineActiveKey: ""
   // Location whose cached daylight read is outstanding, "" when none is. Doubles
   // as the guard against a late read — or a fresh response — landing for a place
   // the user has already moved off from.
@@ -55,6 +62,11 @@ Panel {
   property var configuredLocationState: ({ name: "", latitude: null, longitude: null })
   readonly property bool hasLocation: !!root.configuredLocationState && root.configuredLocationState.name !== ""
   readonly property string displayLocationName: root.hasLocation ? String(root.configuredLocationState.name) : ""
+  // Identifies the active place. Every fetch carries this so a reply can be
+  // matched to the location it was asked for.
+  readonly property string locationKey: root.hasLocation
+    ? String(root.configuredLocationState.latitude) + "," + String(root.configuredLocationState.longitude)
+    : ""
   property bool editingLocation: false
   property var locationSuggestions: []
   property int suggestionIndex: 0
@@ -209,9 +221,7 @@ Panel {
   // can converge to an equal value, so cheap identical-key reloads are the
   // norm and refetches the exception.
   function applyLocation() {
-    var key = root.hasLocation
-      ? String(root.configuredLocationState.latitude) + "," + String(root.configuredLocationState.longitude)
-      : ""
+    var key = root.locationKey
     root.cacheSlug = root.hasLocation ? Model.locationSlug(root.configuredLocationState.name) : "nolocation"
 
     if (key === root.appliedLocationKey) {
@@ -228,17 +238,16 @@ Panel {
   function refresh() {
     if (!root.hasLocation) return
     root.tick()
-    extremesProc.command = root.fetchCommand(root.extremesBaseUrl, root.extremesCachePath, 24, 72)
-    timelineProc.command = root.fetchCommand(root.timelineBaseUrl, root.timelineCachePath, 12, 36)
-    if (!extremesProc.running) extremesProc.running = true
-    if (!timelineProc.running) timelineProc.running = true
+    root.requestTides()
     root.requestSun()
   }
 
   function onExtremesFetched(raw) {
+    // A body for a place the user has already moved off from must not land.
+    if (root.extremesActiveKey === "" || root.extremesActiveKey !== root.locationKey) return
     var parsed = Model.parseExtremes(raw)
     if (parsed.length === 0) {
-      if (root.extremesRetries < 3) { root.extremesRetries++; extremesRetryTimer.restart() }
+      if (root.extremesRetries < 3) root.retryExtremes()
       else if (root.hasLocation) root.dataFailed = true
       return
     }
@@ -250,9 +259,10 @@ Panel {
   }
 
   function onTimelineFetched(raw) {
+    if (root.timelineActiveKey === "" || root.timelineActiveKey !== root.locationKey) return
     var parsed = Model.parseTimeline(raw)
     if (parsed.length === 0) {
-      if (root.timelineRetries < 3) { root.timelineRetries++; timelineRetryTimer.restart() }
+      root.retryTimeline()
       return
     }
     root.timelineRetries = 0
@@ -457,22 +467,97 @@ Panel {
       cachePath]
   }
 
+  // ---- Tide fetches. One request per stream at a time. A location picked
+  //      while a request is in flight is not lost: the key it needs no longer
+  //      matches the slot, so the re-arm on completion picks it up. Skipped
+  //      when the right request is already running, which also keeps the
+  //      ten-minute refresh from piling up duplicates.
+  function requestTides() {
+    root.requestExtremes()
+    root.requestTimeline()
+  }
+
+  function requestExtremes() {
+    if (!root.hasLocation) return
+    if (root.extremesActiveKey === root.locationKey) return
+    if (extremesProc.running) return
+    root.extremesActiveKey = root.locationKey
+    extremesProc.command = root.fetchCommand(root.extremesBaseUrl, root.extremesCachePath, 24, 72)
+    extremesProc.running = true
+  }
+
+  function requestTimeline() {
+    if (!root.hasLocation) return
+    if (root.timelineActiveKey === root.locationKey) return
+    if (timelineProc.running) return
+    root.timelineActiveKey = root.locationKey
+    timelineProc.command = root.fetchCommand(root.timelineBaseUrl, root.timelineCachePath, 12, 36)
+    timelineProc.running = true
+  }
+
+  // Releases the single-flight slot for the request that just ended, and — if
+  // the location moved while it was running — asks for the new one straight
+  // away. This is what makes the upcoming-events list follow a pick made
+  // mid-request.
+  //
+  // The ended key is passed in rather than read from the slot, and the slot is
+  // only cleared when it still holds that key: the exit path releases a turn
+  // later, by which point the re-arm may already have launched a *newer*
+  // request, and that newer request's slot must survive untouched. Clearing it
+  // would make the new response look stale, and it would then be discarded with
+  // nothing left to ask again — the list would stay on the old place until
+  // reopen.
+  function extremesFetchSettled(finished) {
+    if (finished === undefined || finished === "") return
+    if (root.extremesActiveKey !== finished) return
+    root.extremesActiveKey = ""
+    if (finished !== root.locationKey) Qt.callLater(root.requestExtremes)
+  }
+
+  function timelineFetchSettled(finished) {
+    if (finished === undefined || finished === "") return
+    if (root.timelineActiveKey !== finished) return
+    root.timelineActiveKey = ""
+    if (finished !== root.locationKey) Qt.callLater(root.requestTimeline)
+  }
+
+  // A retry belongs to whatever location is current when it fires, so the stale
+  // key is dropped first and the requester is free to re-arm it.
+  function retryExtremes() {
+    if (!root.hasLocation || root.extremesRetries >= 3) return
+    root.extremesRetries++
+    root.extremesActiveKey = ""
+    extremesRetryTimer.restart()
+  }
+
+  function retryTimeline() {
+    if (!root.hasLocation || root.timelineRetries >= 3) return
+    root.timelineRetries++
+    root.timelineActiveKey = ""
+    timelineRetryTimer.restart()
+  }
+
   Process {
     id: extremesProc
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onExtremesFetched(text)
     }
+    onExited: function(exitCode) {
+      // A failed request yields no body for onExtremesFetched to reject, so the
+      // retry is armed here. Which request ended is captured now, while the slot
+      // still holds it, and the release waits a turn so a stdout close landing
+      // after the exit is still matched to the request it belongs to.
+      if (exitCode !== 0) root.retryExtremes()
+      var done = root.extremesActiveKey
+      Qt.callLater(function() { root.extremesFetchSettled(done) })
+    }
   }
 
   Timer {
     id: extremesRetryTimer
     interval: 3000
-    onTriggered: {
-      if (!root.hasLocation) return
-      extremesProc.command = root.fetchCommand(root.extremesBaseUrl, root.extremesCachePath, 24, 72)
-      if (!extremesProc.running) extremesProc.running = true
-    }
+    onTriggered: root.requestExtremes()
   }
 
   Process {
@@ -481,16 +566,17 @@ Panel {
       waitForEnd: true
       onStreamFinished: root.onTimelineFetched(text)
     }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) root.retryTimeline()
+      var done = root.timelineActiveKey
+      Qt.callLater(function() { root.timelineFetchSettled(done) })
+    }
   }
 
   Timer {
     id: timelineRetryTimer
     interval: 4000
-    onTriggered: {
-      if (!root.hasLocation) return
-      timelineProc.command = root.fetchCommand(root.timelineBaseUrl, root.timelineCachePath, 12, 36)
-      if (!timelineProc.running) timelineProc.running = true
-    }
+    onTriggered: root.requestTimeline()
   }
 
   // ---- Sunrise / sunset (Open-Meteo daily API).  Refetched on every location
@@ -504,9 +590,7 @@ Panel {
       + "&longitude=" + encodeURIComponent(String(root.configuredLocationState.longitude))
       + "&daily=sunrise,sunset&timezone=auto&timeformat=unixtime&forecast_days=2"
     : ""
-  readonly property string sunRequestKey: root.hasLocation
-    ? String(root.configuredLocationState.latitude) + "," + String(root.configuredLocationState.longitude)
-    : ""
+  readonly property string sunRequestKey: root.locationKey
   readonly property string sunCachePath: root.settingsDir + "/gnosis-tide-" + root.cacheSlug + "-sun.json"
 
   // Asks for the current location's daylight data, at most one request at a
