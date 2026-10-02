@@ -131,9 +131,9 @@ Panel {
     root.recomputeCurve()
   }
 
-  // Paints the moon's visible disc: the lit shape (crescent lens or
-  // disc-minus-shade) with the lit side on the sunward tack. A straight phase
-  // graphic — waxing leans right, waning left, no sky tilt.
+  // Paints the moon's visible disc: a shaded body with the lit lens laid on
+  // top, lit side on the sunward tack. A straight phase graphic — waxing leans
+  // right, waning left, no sky tilt.
   function paintMoon(ctx) {
     if (!ctx) return
     var cw = moonCanvas.width, ch = moonCanvas.height
@@ -144,51 +144,56 @@ Panel {
     var info = root.moon
     if (!info) return
 
-    ctx.beginPath()
-    ctx.arc(cx, cy, r, 0, 2 * Math.PI, false)
-    ctx.lineWidth = 1
-    ctx.strokeStyle = Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.28)
-    ctx.stroke()
+    var lit = Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.92)
+    // The unlit body is the same flat grey wash the daylight chart uses for
+    // night, so the shadowed limb reads as one with the panel instead of as a
+    // second lit surface.
+    var shade = Qt.rgba(0, 0, 0, 0.05)
+    var k = Math.max(0, Math.min(1, info.illumination))
+    var term = Math.abs(2 * k - 1) * r
 
     ctx.save()
     ctx.translate(cx, cy)
 
-    var lit = Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.92)
-    var dark = Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.14)
-    var k = Math.max(0, Math.min(1, info.illumination))
-    var term = Math.abs(2 * k - 1) * r
-
-    // Full disc first — lit when more than half lit, dark otherwise…
+    // Shadowed body first, flat across the whole disc…
     ctx.beginPath()
     ctx.arc(0, 0, r, 0, 2 * Math.PI, false)
-    ctx.fillStyle = (2 * k - 1) >= 0 ? lit : dark
+    ctx.fillStyle = shade
     ctx.fill()
 
-    // …then the lens between the limb and the elliptical terminator, built
-    // from sampled points (Canvas ellipse() draws a disconnected blob, so it's
-    // not used here). The overlay hugs the lit side on crescents and the
-    // dark side past half, growing to nothing at new/full moon.
-    var litRight = info.waxing
-    var shade = (2 * k - 1) >= 0
-    var side = litRight ? 1 : -1
-    var overlay = shade ? -side : side
+    // …then the lit lens on top: the sunward limb semicircle closed by the
+    // elliptical terminator, sampled by hand because Canvas ellipse() draws a
+    // disconnected blob. The lens grows from nothing to the full disc as the
+    // phase runs new → full.
+    var limbDir = info.waxing ? -1 : 1
+    // The terminator bulges away from the limb past half phase (gibbous lens)
+    // and into it below half (crescent lens); the flip is what keeps the drawn
+    // area equal to the reported illumination at every phase.
+    var termSign = (2 * k - 1) >= 0 ? limbDir : -limbDir
     var n = 48
 
     ctx.beginPath()
     ctx.moveTo(0, r)
     for (var i = 1; i <= n; i++) {
-      var a = Math.PI / 2 + i / n * Math.PI * (overlay > 0 ? -1 : 1)
+      var a = Math.PI / 2 + i / n * Math.PI * limbDir
       ctx.lineTo(r * Math.cos(a), r * Math.sin(a))
     }
     for (var j = 0; j <= n; j++) {
-      var b = -Math.PI / 2 + j / n * Math.PI * (overlay > 0 ? 1 : -1)
-      ctx.lineTo(term * Math.cos(b), r * Math.sin(b))
+      var b = -Math.PI / 2 + j / n * Math.PI
+      ctx.lineTo(termSign * term * Math.cos(b), r * Math.sin(b))
     }
     ctx.closePath()
-    ctx.fillStyle = shade ? dark : lit
+    ctx.fillStyle = lit
     ctx.fill()
 
     ctx.restore()
+
+    // Limb last, so it reads over both the lit lens and the shadow wash.
+    ctx.beginPath()
+    ctx.arc(cx, cy, r, 0, 2 * Math.PI, false)
+    ctx.lineWidth = 1
+    ctx.strokeStyle = Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.28)
+    ctx.stroke()
   }
 
   function recomputeCurve() {
